@@ -2,7 +2,7 @@
 // Powered by Claude Opus with tool calling for data access
 
 import Anthropic from '@anthropic-ai/sdk'
-import { queryAthleteData } from './lib/data-collector.js'
+import { queryAthleteData, queryTable } from './lib/data-collector.js'
 
 const LUCY_SYSTEM_PROMPT = `You are Lucy, an AI-powered cycling and endurance sports coach. You help athletes analyze training, race data, and optimize their performance.
 
@@ -32,24 +32,40 @@ Respond based on confidence level:
 Weave confidence naturally into your responses.
 
 ## DATA ACCESS
-You have access to the athlete's training data through the query_athlete_data tool. USE IT when:
-- The athlete asks about specific metrics (FTP, CTL, TSB, sleep, weight, etc.)
-- You need current/recent data to give personalized advice
-- The athlete asks "how am I doing" type questions
-- Questions about upcoming races or events
-- Questions about nutrition or recovery trends
+You have access to TWO tools for querying athlete data:
 
-Available query types:
-- profile: Basic athlete info (weight, age, rider type, competitive level)
+### 1. query_athlete_data (Smart Analytics)
+Use for analyzed/summarized data with calculations:
+- profile: Basic athlete info (weight, age, rider type)
 - power_metrics: FTP, CP, W', power curve, strengths/weaknesses
-- training_load: Current ATL, CTL, TSB (form), recent training stress
-- sleep_summary: Sleep duration, quality, HRV trends
-- wellness_summary: Energy, mood, stress, readiness scores
-- weekly_summary: This/last week's training overview
-- upcoming_events: Scheduled races and events
-- nutrition_summary: Calorie and macro intake
+- training_load: ATL, CTL, TSB (form) with analysis
+- sleep_summary: Sleep averages, HRV trends
+- wellness_summary: Energy, mood, readiness scores
+- weekly_summary: Week overview with totals
+- upcoming_events: Scheduled races
+- nutrition_summary: Calorie/macro averages
+
+### 2. query_table (Raw Data Access)
+Use to query ANY database table directly for detailed/raw data:
+- daily_meals: Individual meals (what they ate, calories, protein)
+- daily_biometrics: HRV, resting HR, weight, body composition
+- daily_weather: Weather conditions for training context
+- daily_location: Where they're training
+- daily_medical: Illness, injury, medication tracking
+- equipment: Bikes, trainers, power meters
+- expenses: Training-related costs
+- planned_workouts: Scheduled training sessions
+- travel: Upcoming trips and races
+- And 20+ more tables...
 
 Date ranges available: today, yesterday, last_7_days, last_30_days, this_week, last_week
+
+### When to use which tool:
+- "What's my FTP?" → query_athlete_data(power_metrics) - needs analysis
+- "What did I eat today?" → query_table(daily_meals) - raw meal data
+- "Am I ready to train?" → query_athlete_data(wellness_summary) - needs calculations
+- "What's my HRV?" → query_table(daily_biometrics) - specific raw metric
+- "What bikes do I have?" → query_table(equipment) - raw list
 
 IMPORTANT: When you receive data from a tool, interpret it naturally as a coach would. Don't just read numbers back - provide context, insights, and coaching recommendations.
 
@@ -101,9 +117,10 @@ Remember: You're not just an AI - you're their coach. Be direct, be honest, help
 
 // Tool definitions for Claude
 const TOOLS = [
+  // Tool 1: Specialized analytics with calculations
   {
     name: 'query_athlete_data',
-    description: 'Query the athlete\'s training, wellness, and performance data from the database. Use this when the athlete asks about their metrics, training load, sleep, nutrition, upcoming events, or any personal data.',
+    description: 'Get analyzed/summarized athlete data with calculations (PMC metrics, averages, trends). Use for: FTP, CTL/ATL/TSB, sleep summaries, wellness scores, weekly overviews.',
     input_schema: {
       type: 'object',
       properties: {
@@ -119,7 +136,7 @@ const TOOLS = [
             'upcoming_events',
             'nutrition_summary'
           ],
-          description: 'The type of data to retrieve. profile=basic info, power_metrics=FTP/power curve, training_load=CTL/ATL/TSB, sleep_summary=sleep quality, wellness_summary=readiness/energy, weekly_summary=week overview, upcoming_events=races, nutrition_summary=macros/calories'
+          description: 'The type of analysis to retrieve. profile=basic info, power_metrics=FTP/power curve, training_load=CTL/ATL/TSB, sleep_summary=sleep quality, wellness_summary=readiness/energy, weekly_summary=week overview, upcoming_events=races, nutrition_summary=macros/calories'
         },
         date_range: {
           type: 'string',
@@ -128,6 +145,30 @@ const TOOLS = [
         }
       },
       required: ['query_type']
+    }
+  },
+  // Tool 2: Generic raw data access to any table
+  {
+    name: 'query_table',
+    description: 'Query any database table directly for raw data. Use for: daily_meals (individual meals), daily_biometrics (HRV, weight, resting HR), daily_weather, daily_location, daily_medical, equipment (bikes/gear), expenses, planned_workouts, travel, tcx_files, and more.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        table_name: {
+          type: 'string',
+          description: 'Table to query. Examples: daily_meals, daily_biometrics, daily_weather, daily_location, daily_medical, equipment, expenses, planned_workouts, travel, life_events, tcx_files, power_duration_curve, athlete_insights'
+        },
+        date_range: {
+          type: 'string',
+          enum: ['today', 'yesterday', 'last_7_days', 'last_30_days', 'this_week', 'last_week'],
+          description: 'Optional date filter. Leave empty for non-date-based queries (like equipment, profile).'
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of records to return. Default is 50.'
+        }
+      },
+      required: ['table_name']
     }
   }
 ]
@@ -199,12 +240,22 @@ export async function handler(event, context) {
 
       console.log(`Executing tool: ${toolUseBlock.name}`, toolUseBlock.input)
 
-      // Execute the data collector query
+      // Execute the appropriate tool
       let toolResult
       if (toolUseBlock.name === 'query_athlete_data') {
+        // Specialized analytics query
         toolResult = await queryAthleteData(
           toolUseBlock.input.query_type,
           toolUseBlock.input.date_range
+        )
+      } else if (toolUseBlock.name === 'query_table') {
+        // Generic table query
+        toolResult = await queryTable(
+          toolUseBlock.input.table_name,
+          {
+            dateRange: toolUseBlock.input.date_range,
+            limit: toolUseBlock.input.limit || 50
+          }
         )
       } else {
         toolResult = { success: false, error: `Unknown tool: ${toolUseBlock.name}` }

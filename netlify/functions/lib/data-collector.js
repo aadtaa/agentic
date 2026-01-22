@@ -5,6 +5,47 @@ import { createClient } from '@supabase/supabase-js'
 
 const ATHLETE_ID = '00000000-0000-0000-0000-000000000001'
 
+// Whitelist of allowed tables for generic queries (security)
+const ALLOWED_TABLES = [
+  // Layer 1: Athlete Identity
+  'athlete_profile', 'athlete_connections',
+  // Layer 2: Power Profile
+  'signature_metrics', 'power_duration_curve', 'seven_axis_profile', 'metabolic_profile', 'durability_metrics',
+  // Layer 3: Training Data
+  'tcx_files', 'training_load',
+  // Layer 4: Three-Block System (Daily)
+  'daily_log', 'daily_sleep', 'daily_nutrition', 'daily_meals', 'daily_foods',
+  'daily_wellness', 'daily_biometrics', 'daily_weather', 'daily_location', 'daily_medical',
+  // Layer 4: Summaries
+  'weekly_summary', 'monthly_summary',
+  // Layer 5: Calendar & Planning
+  'events', 'planned_workouts', 'life_events', 'travel',
+  // Layer 6: Intelligence
+  'athlete_insights', 'training_focus',
+  // Layer 7: Equipment & Finance
+  'equipment', 'equipment_usage', 'expenses'
+]
+
+// Tables that don't have a 'date' field for filtering
+const NON_DATE_TABLES = [
+  'athlete_profile', 'athlete_connections', 'signature_metrics', 'power_duration_curve',
+  'seven_axis_profile', 'metabolic_profile', 'durability_metrics', 'equipment', 'athlete_insights', 'training_focus'
+]
+
+// Tables that use different date field names
+const DATE_FIELD_MAP = {
+  'weekly_summary': 'week_start',
+  'monthly_summary': 'month',
+  'signature_metrics': 'recorded_at',
+  'power_duration_curve': 'recorded_at',
+  'seven_axis_profile': 'recorded_at',
+  'metabolic_profile': 'recorded_at',
+  'durability_metrics': 'recorded_at',
+  'planned_workouts': 'scheduled_date',
+  'travel': 'departure_date',
+  'equipment': 'purchase_date'
+}
+
 function getSupabaseClient() {
   const supabaseUrl = process.env.SUPABASE_URL
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -546,7 +587,91 @@ async function getNutritionSummary(supabase, dateRange) {
   }
 }
 
-// Main dispatcher
+// ============================================
+// GENERIC TABLE QUERY (Hybrid Architecture)
+// ============================================
+
+async function queryTable(tableName, options = {}) {
+  // Validate table name against whitelist
+  if (!ALLOWED_TABLES.includes(tableName)) {
+    return {
+      success: false,
+      error: `Unknown or unauthorized table: ${tableName}`,
+      available_tables: ALLOWED_TABLES
+    }
+  }
+
+  const supabase = getSupabaseClient()
+  const { dateRange, limit = 50, orderBy, ascending = false } = options
+
+  // Determine the appropriate date field for this table
+  const dateField = DATE_FIELD_MAP[tableName] || 'date'
+  const hasDateField = !NON_DATE_TABLES.includes(tableName)
+
+  try {
+    let query = supabase.from(tableName).select('*')
+
+    // Filter by athlete ID (handle different column names)
+    if (tableName === 'athlete_profile') {
+      query = query.eq('id', ATHLETE_ID)
+    } else if (tableName === 'equipment_usage') {
+      // equipment_usage links through equipment, so we need to handle differently
+      // For now, just get all and let the join handle it
+    } else {
+      query = query.eq('athlete_id', ATHLETE_ID)
+    }
+
+    // Apply date filter if table has dates and dateRange is provided
+    if (hasDateField && dateRange) {
+      const { startDate, endDate } = getDateRange(dateRange)
+      query = query.gte(dateField, startDate).lte(dateField, endDate)
+    }
+
+    // Apply ordering (use date field by default for tables with dates)
+    const orderField = orderBy || (hasDateField ? dateField : 'created_at')
+    query = query.order(orderField, { ascending })
+
+    // Apply limit
+    query = query.limit(limit)
+
+    const { data, error } = await query
+
+    if (error) {
+      return { success: false, error: error.message, table: tableName }
+    }
+
+    if (!data || data.length === 0) {
+      return {
+        success: false,
+        error: `No data found in ${tableName}`,
+        table: tableName,
+        suggestion: dateRange ? `Try a different date range or check if data exists for this period` : null
+      }
+    }
+
+    // Add helpful metadata
+    return {
+      success: true,
+      table: tableName,
+      data: data,
+      metadata: {
+        records: data.length,
+        date_range: dateRange || 'all',
+        date_field: hasDateField ? dateField : null,
+        limited: data.length === limit
+      }
+    }
+  } catch (error) {
+    console.error(`queryTable error for ${tableName}:`, error)
+    return { success: false, error: error.message || 'Query failed', table: tableName }
+  }
+}
+
+// ============================================
+// MAIN DISPATCHERS
+// ============================================
+
+// Main dispatcher for specialized analytics queries
 export async function queryAthleteData(queryType, dateRange = null) {
   try {
     const supabase = getSupabaseClient()
@@ -584,3 +709,9 @@ export async function queryAthleteData(queryType, dateRange = null) {
     return { success: false, error: error.message || 'Failed to query data' }
   }
 }
+
+// Export generic table query function
+export { queryTable }
+
+// Export helper for getting Supabase client (for use in chat.js if needed)
+export { getSupabaseClient }
