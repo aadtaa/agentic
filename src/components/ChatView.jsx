@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import Logo from './Logo'
 
 const ChatView = () => {
@@ -122,7 +123,7 @@ const ChatView = () => {
                     </div>
                   ) : (
                     <div style={{ marginBottom: '24px' }} className="markdown-content">
-                      <ReactMarkdown>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
                         {msg.content}
                       </ReactMarkdown>
                     </div>
