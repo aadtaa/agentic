@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
+import ReactMarkdown from 'react-markdown'
 import Logo from './Logo'
 
 const ChatView = () => {
@@ -120,16 +121,10 @@ const ChatView = () => {
                       </div>
                     </div>
                   ) : (
-                    <div style={{ marginBottom: '24px' }}>
-                      <p style={{
-                        fontSize: '15px',
-                        color: 'var(--text-primary)',
-                        lineHeight: 1.7,
-                        whiteSpace: 'pre-wrap',
-                        margin: 0,
-                      }}>
+                    <div style={{ marginBottom: '24px' }} className="markdown-content">
+                      <ReactMarkdown>
                         {msg.content}
-                      </p>
+                      </ReactMarkdown>
                     </div>
                   )}
                 </div>
