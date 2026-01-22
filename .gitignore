@@ -10,3 +10,17 @@ node_modules/
 dist/
 build/
 .netlify/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
