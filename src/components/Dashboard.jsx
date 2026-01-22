@@ -7,6 +7,7 @@ import DataAgent from './agents/DataAgent'
 import CodeAgent from './agents/CodeAgent'
 import ResearchAgent from './agents/ResearchAgent'
 import WritingAgent from './agents/WritingAgent'
+import DataViewer from './DataViewer'
 import Logo from './Logo'
 
 const Dashboard = () => {
@@ -36,6 +37,17 @@ const Dashboard = () => {
           <circle cx="6" cy="9" r="1.5" fill="currentColor"/>
           <circle cx="9" cy="11" r="1.5" fill="currentColor"/>
           <circle cx="12" cy="6" r="1.5" fill="currentColor"/>
+        </svg>
+      )
+    },
+    {
+      id: 'dataviewer',
+      label: 'Data Viewer',
+      appView: 'dataviewer',
+      icon: (
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+          <rect x="3" y="3" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+          <path d="M3 7H15M7 7V15" stroke="currentColor" strokeWidth="1.5"/>
         </svg>
       )
     },
@@ -115,6 +127,8 @@ const Dashboard = () => {
     switch (activeView) {
       case 'data':
         return <DataAgent />
+      case 'dataviewer':
+        return <DataViewer />
       case 'code':
         return <CodeAgent />
       case 'research':
