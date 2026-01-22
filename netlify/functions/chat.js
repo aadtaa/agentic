@@ -188,13 +188,13 @@ const TOOLS = [
   // Tool 2: Generic raw data access to any table
   {
     name: 'query_table',
-    description: 'Query any database table directly for raw data. Use for: daily_meals (individual meals), daily_biometrics (HRV, weight, resting HR), daily_weather, daily_location, daily_medical, equipment (bikes/gear), expenses, planned_workouts, travel, tcx_files, and more.',
+    description: 'Query any database table directly for raw data. Use for: daily_nutrition (daily calorie/macro totals), daily_meals (individual meals), daily_biometrics (HRV, weight, resting HR), daily_weather, daily_location, daily_medical, equipment (bikes/gear), expenses, planned_workouts, travel, tcx_files, and more.',
     input_schema: {
       type: 'object',
       properties: {
         table_name: {
           type: 'string',
-          description: 'Table to query. Examples: daily_meals, daily_biometrics, daily_weather, daily_location, daily_medical, equipment, expenses, planned_workouts, travel, life_events, tcx_files, power_duration_curve, athlete_insights'
+          description: 'Table to query. Examples: daily_nutrition, daily_meals, daily_biometrics, daily_weather, daily_location, daily_medical, equipment, expenses, planned_workouts, travel, life_events, tcx_files, power_duration_curve, athlete_insights'
         },
         date_range: {
           type: 'string',
