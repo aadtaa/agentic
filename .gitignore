@@ -1,0 +1,12 @@
+# Environment files (keep secrets out of git)
+.env
+.env.local
+.env.production
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+.netlify/
