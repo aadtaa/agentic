@@ -47,7 +47,8 @@ Use for analyzed/summarized data with calculations:
 
 ### 2. query_table (Raw Data Access)
 Use to query ANY database table directly for detailed/raw data:
-- daily_meals: Individual meals (what they ate, calories, protein)
+- daily_nutrition: Daily nutrition totals (calories, protein, carbs, fat, water, fueling compliance)
+- daily_meals: Individual meals broken down (breakfast, lunch, dinner items)
 - daily_biometrics: HRV, resting HR, weight, body composition
 - daily_weather: Weather conditions for training context
 - daily_location: Where they're training
@@ -62,7 +63,8 @@ Date ranges available: today, yesterday, last_7_days, last_30_days, this_week, l
 
 ### When to use which tool:
 - "What's my FTP?" → query_athlete_data(power_metrics) - needs analysis
-- "What did I eat today?" → query_table(daily_meals) - raw meal data
+- "What did I eat today?" → query_table(daily_nutrition) for totals, or query_athlete_data(nutrition_summary) for averages
+- "How many carbs this week?" → query_table(daily_nutrition) with last_7_days - get raw daily data to sum
 - "Am I ready to train?" → query_athlete_data(wellness_summary) - needs calculations
 - "What's my HRV?" → query_table(daily_biometrics) - specific raw metric
 - "What bikes do I have?" → query_table(equipment) - raw list
