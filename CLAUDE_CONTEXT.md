@@ -71,93 +71,158 @@
 
 ## Database Architecture (7 Layers)
 
-The database follows a structured 7-layer architecture designed for athlete intelligence.
+The database follows a structured 7-layer architecture designed for athlete intelligence. Schema defined in `supabase/schema.sql`.
 
 ### Layer 1: Athlete Identity
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  ATHLETE_PROFILE                                            │
-├─────────────────────────────────────────────────────────────┤
-│  id, name, weight_kg, competitive_level                     │
-│  rider_type (Diesel/Sprinter/All-rounder/Climber)          │
-│  rider_type_confidence (0-100%)                             │
-│  training_start_date                                        │
-└─────────────────────────────────────────────────────────────┘
+#### `athlete_profile`
+Core athlete information and preferences.
 
-┌─────────────────────────────────────────────────────────────┐
-│  ATHLETE_CONNECTIONS                                        │
-├─────────────────────────────────────────────────────────────┤
-│  OAuth/API integrations (Garmin, Strava, Wahoo, etc.)      │
-└─────────────────────────────────────────────────────────────┘
-```
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `name`, `preferred_name` | TEXT | Display names |
+| `email`, `phone` | TEXT | Contact info |
+| `weight_kg`, `height_cm` | DECIMAL | Physical measurements |
+| `date_of_birth` | DATE | Birth date |
+| `sex` | TEXT | `male`, `female`, `other` |
+| `blood_type` | TEXT | `A+`, `A-`, `B+`, `B-`, `AB+`, `AB-`, `O+`, `O-` |
+| `competitive_level` | TEXT | `beginner`, `amateur`, `amateur_elite`, `elite`, `pro` |
+| `rider_type` | TEXT | `Sprinter`, `Climber`, `Diesel`, `All-rounder`, `TT Specialist` |
+| `rider_type_confidence` | INT | 0-100% confidence in rider type classification |
+| `primary_sport` | TEXT | Default: `cycling` |
+| `secondary_sports` | JSONB | Array of other sports |
+| `training_start_date` | DATE | When athlete started training |
+| `coach_name`, `coach_email` | TEXT | Coach contact |
+| `timezone` | TEXT | Default: `UTC` |
+| `units_preference` | TEXT | `metric` or `imperial` |
+| `home_location` | JSONB | `{city, country, lat, lng, elevation_m}` |
+| `dietary_restrictions` | JSONB | Array of restrictions |
+| `allergies` | JSONB | Array of allergies |
+| `emergency_contact` | JSONB | `{name, phone, relationship}` |
+
+#### `athlete_connections`
+OAuth/API integrations with external services.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `provider` | TEXT | `garmin`, `wahoo`, `strava`, `whoop`, `oura`, `apple_health`, `myfitnesspal`, etc. |
+| `access_token`, `refresh_token` | TEXT | Encrypted tokens |
+| `token_expires_at` | TIMESTAMPTZ | Token expiry |
+| `sync_enabled` | BOOLEAN | Auto-sync enabled |
+| `sync_frequency` | TEXT | `realtime`, `hourly`, `daily` |
+| `connection_status` | TEXT | `connected`, `expired`, `error` |
+| `last_sync_at` | TIMESTAMPTZ | Last successful sync |
+
+---
 
 ### Layer 2: Power Profile
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  SIGNATURE_METRICS (current snapshot)                       │
-├─────────────────────────────────────────────────────────────┤
-│  ftp_watts, critical_power_watts                            │
-│  w_prime_kj, pmax_watts, map_watts                          │
-│  recorded_at, vs_4_weeks_change                             │
-└─────────────────────────────────────────────────────────────┘
+#### `signature_metrics`
+Current power profile snapshot.
 
-┌─────────────────────────────────────────────────────────────┐
-│  POWER_DURATION_CURVE (1s → 3h)                             │
-├─────────────────────────────────────────────────────────────┤
-│  duration_seconds, power_watts, w_per_kg                    │
-│  domain, physiological_parameter, recorded_date             │
-└─────────────────────────────────────────────────────────────┘
+| Column | Type | Description |
+|--------|------|-------------|
+| `ftp_watts` | INT | Functional Threshold Power |
+| `ftp_w_per_kg` | DECIMAL | FTP relative to weight |
+| `critical_power_watts` | INT | CP from power-duration model |
+| `w_prime_kj` | DECIMAL | Anaerobic work capacity |
+| `pmax_watts` | INT | Peak power (neuromuscular) |
+| `map_watts` | INT | Maximal Aerobic Power |
+| `max_hr`, `resting_hr`, `lthr` | INT | Heart rate metrics |
+| `data_source` | TEXT | `test`, `race`, `estimated` |
 
-┌─────────────────────────────────────────────────────────────┐
-│  SEVEN_AXIS_PROFILE (percentiles P1-P99)                    │
-├─────────────────────────────────────────────────────────────┤
-│  neuromuscular_p, w_prime_p, glycolytic_p, vo2max_p         │
-│  threshold_p, endurance_p, durability_p                     │
-└─────────────────────────────────────────────────────────────┘
+#### `power_duration_curve`
+Power outputs at standard durations (1s to 3h).
 
-┌─────────────────────────────────────────────────────────────┐
-│  METABOLIC_PROFILE                                          │
-├─────────────────────────────────────────────────────────────┤
-│  fractional_utilization, vlamax_estimated                   │
-│  p1min_p20min_ratio, carb_dependency                        │
-└─────────────────────────────────────────────────────────────┘
+| Column | Type | Description |
+|--------|------|-------------|
+| `duration_seconds` | INT | 1, 5, 15, 30, 60, 120, 180, 300, 480, 720, 1200, 1800, 3600, 5400, 10800 |
+| `power_watts` | INT | Best power at duration |
+| `w_per_kg` | DECIMAL | Relative power |
+| `domain` | TEXT | `Extreme`, `Severe`, `Heavy`, `Moderate` |
+| `physiological_parameter` | TEXT | `Pmax`, `Sprint`, `MAP`, `FTP`, etc. |
+| `context` | TEXT | `fresh`, `fatigued`, `race`, `training` |
 
-┌─────────────────────────────────────────────────────────────┐
-│  DURABILITY_METRICS                                         │
-├─────────────────────────────────────────────────────────────┤
-│  retention_percent, power_fade_5min, power_fade_20min       │
-│  hr_power_decoupling, tte_at_cp                             │
-└─────────────────────────────────────────────────────────────┘
-```
+#### `seven_axis_profile`
+Percentile rankings across 7 physiological axes.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `neuromuscular_p` | INT | 1-99 percentile (sprint/peak power) |
+| `w_prime_p` | INT | 1-99 percentile (anaerobic capacity) |
+| `glycolytic_p` | INT | 1-99 percentile (30s-2min power) |
+| `vo2max_p` | INT | 1-99 percentile (3-8min power) |
+| `threshold_p` | INT | 1-99 percentile (FTP/CP) |
+| `endurance_p` | INT | 1-99 percentile (long duration) |
+| `durability_p` | INT | 1-99 percentile (fatigue resistance) |
+| `comparison_population` | TEXT | `all`, `age_group`, `competitive_level` |
+
+#### `metabolic_profile`
+Metabolic characteristics.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `fractional_utilization_pct` | DECIMAL | % of VO2max at threshold |
+| `vlamax_estimated` | DECIMAL | Glycolytic capacity estimate |
+| `fat_max_watts` | INT | Power at max fat oxidation |
+| `carb_dependency` | TEXT | `Low`, `Moderate`, `High` |
+| `metabolic_type` | TEXT | `Diesel`, `Balanced`, `Explosive` |
+
+#### `durability_metrics`
+Fatigue resistance measurements.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `retention_pct` | DECIMAL | Power retention after fatigue |
+| `fresh_cp_watts`, `fatigued_cp_watts` | INT | CP fresh vs fatigued |
+| `power_fade_5min_pct`, `power_fade_20min_pct` | DECIMAL | Power decay rates |
+| `hr_power_decoupling_pct` | DECIMAL | HR drift vs power |
+| `tte_at_cp_minutes` | INT | Time to exhaustion at CP |
+| `durability_rating` | TEXT | `Poor`, `Fair`, `Good`, `Excellent` |
+
+---
 
 ### Layer 3: Training Data
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  TCX_FILES (raw files, not parsed to seconds)               │
-├─────────────────────────────────────────────────────────────┤
-│  id, athlete_id, filename, uploaded_at                      │
-│  file_path (storage location)                               │
-│  activity_date, activity_type                               │
-│  summary_json (basic metrics extracted once)                │
-│    → duration, distance, avg_power, tss, etc.              │
-└─────────────────────────────────────────────────────────────┘
-│                                                             │
-│  NOTE: Full second-by-second data stays in TCX file.       │
-│  Code Generator runs analysis on raw file when needed.      │
-└─────────────────────────────────────────────────────────────┘
+#### `tcx_files`
+Uploaded activity files with extracted summaries.
 
-┌─────────────────────────────────────────────────────────────┐
-│  TRAINING_LOAD (daily aggregates from summaries)            │
-├─────────────────────────────────────────────────────────────┤
-│  date, tss_total, duration_total                            │
-│  atl, ctl, tsb (PMC values)                                 │
-└─────────────────────────────────────────────────────────────┘
-```
+| Column | Type | Description |
+|--------|------|-------------|
+| `filename`, `file_path` | TEXT | File storage location |
+| `file_hash` | TEXT | For deduplication |
+| `activity_date` | DATE | When activity occurred |
+| `activity_type` | TEXT | `ride`, `run`, `swim`, `strength`, `other` |
+| `workout_type` | TEXT | `endurance`, `threshold`, `vo2max`, `recovery`, `race`, `test` |
+| `duration_seconds`, `moving_time_seconds` | INT | Time metrics |
+| `distance_meters`, `elevation_meters` | INT | Distance/elevation |
+| `avg_power`, `max_power`, `normalized_power` | INT | Power metrics |
+| `intensity_factor` | DECIMAL | IF = NP/FTP |
+| `tss` | DECIMAL | Training Stress Score |
+| `avg_hr`, `max_hr`, `avg_cadence` | INT | HR/cadence |
+| `indoor` | BOOLEAN | Indoor trainer ride |
+| `rpe` | INT | 1-10 perceived exertion |
+| `feeling` | TEXT | `great`, `good`, `ok`, `tired`, `bad` |
 
-### Layer 4: Three-Block System (Life Context)
+#### `training_load`
+Daily PMC (Performance Management Chart) values.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `date` | DATE | Unique per athlete |
+| `tss_total` | DECIMAL | Total TSS for day |
+| `duration_total_seconds` | INT | Total training time |
+| `activities_count` | INT | Number of activities |
+| `atl` | DECIMAL | Acute Training Load (fatigue) |
+| `ctl` | DECIMAL | Chronic Training Load (fitness) |
+| `tsb` | DECIMAL | Training Stress Balance (form) |
+| `ramp_rate` | DECIMAL | CTL change rate |
+| `intensity_distribution` | JSONB | `{z1: 1800, z2: 3600, ...}` |
+
+---
+
+### Layer 4: Three-Block System (Daily Life Context)
 
 ```
 DAILY (detail)              WEEKLY (patterns)          MONTHLY (trends)
@@ -175,89 +240,304 @@ DAILY (detail)              WEEKLY (patterns)          MONTHLY (trends)
 └──────────────────┘       └──────────────────┘       └──────────────────┘
 ```
 
-**Daily Tables**:
-- `daily_log` - Readiness, energy, motivation, mood, stress, recovery
-- `daily_sleep` - Duration, quality, HRV, sleep stages
-- `daily_nutrition` - Calories, macros, micronutrients, hydration
-- `daily_meals` - Individual meal entries
-- `daily_foods` - Food items with nutrition facts
-- `daily_wellness` - Mental health, soreness, menstrual cycle
-- `daily_biometrics` - Weight, body composition, resting HR
-- `daily_weather` - Training conditions
-- `daily_location` - Geographic data, altitude, timezone
-- `daily_medical` - Illness, injury, medication
+#### `daily_log`
+Daily summary scores and flags.
 
-**Summary Tables**:
-- `weekly_summary` - Weekly totals, averages, trends
-- `monthly_summary` - Monthly analysis, consistency metrics
+| Column | Type | Description |
+|--------|------|-------------|
+| `readiness_score` | INT | 1-100 overall readiness |
+| `energy_score`, `motivation_score`, `mood_score`, `stress_score` | INT | 1-10 subjective scores |
+| `sleep_score`, `nutrition_score`, `recovery_score` | INT | 1-100 category scores |
+| `trained`, `rest_day`, `sick`, `injured`, `travel_day`, `race_day` | BOOLEAN | Day flags |
+| `tss_total`, `duration_total_minutes`, `activities_count` | Various | Training summary |
+| `morning_notes`, `evening_notes`, `coach_notes` | TEXT | Journals |
+
+#### `daily_sleep`
+Comprehensive sleep tracking.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `time_in_bed_minutes`, `total_sleep_minutes` | INT | Duration |
+| `sleep_efficiency_pct` | DECIMAL | Sleep/time in bed ratio |
+| `bedtime`, `sleep_onset`, `wake_time` | TIMESTAMPTZ | Timing |
+| `deep_sleep_minutes`, `rem_sleep_minutes`, `light_sleep_minutes`, `awake_minutes` | INT | Sleep stages |
+| `sleep_score`, `restfulness_score` | INT | 1-100 quality scores |
+| `avg_hr_sleeping`, `lowest_hr`, `hrv_avg`, `hrv_rmssd` | Various | Biometrics |
+| `respiratory_rate`, `blood_oxygen_avg_pct` | DECIMAL | Vitals |
+| `skin_temperature_deviation` | DECIMAL | Temp deviation from baseline |
+| `data_source` | TEXT | `oura`, `whoop`, `apple`, `garmin`, `eight_sleep`, `manual` |
+
+#### `daily_nutrition`
+Full macro/micro tracking with training fueling.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `calories_total`, `calories_target` | INT | Energy balance |
+| `protein_g`, `carbs_g`, `fat_g`, `fiber_g` | DECIMAL | Macros |
+| `sodium_mg`, `potassium_mg`, `magnesium_mg`, `calcium_mg` | INT | Electrolytes |
+| `iron_mg`, `zinc_mg`, `vitamin_d_iu`, `vitamin_b12_mcg`, `vitamin_c_mg` | Various | Vitamins/minerals |
+| `water_liters`, `total_fluids_liters` | DECIMAL | Hydration |
+| `pre_workout_carbs_g`, `during_workout_carbs_g`, `post_workout_protein_g` | INT | Training nutrition |
+| `fueling_compliance` | INT | 1-100 adherence to plan |
+| `alcohol_units`, `caffeine_mg` | Various | Substances |
+| `data_source` | TEXT | `myfitnesspal`, `cronometer`, `macrofactor`, `manual` |
+
+#### `daily_meals`
+Individual meal entries.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `meal_type` | TEXT | `breakfast`, `lunch`, `dinner`, `snack`, `pre_workout`, `during_workout`, `post_workout` |
+| `meal_time` | TIMESTAMPTZ | When eaten |
+| `calories`, `protein_g`, `carbs_g`, `fat_g` | Various | Macros |
+| `location` | TEXT | `home`, `restaurant`, `on_bike`, `work` |
+| `quality_score` | INT | 1-5 meal quality |
+| `portion_size` | TEXT | `small`, `normal`, `large` |
+
+#### `daily_foods`
+Individual food items with full nutrition data.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `food_name`, `brand`, `barcode` | TEXT | Food identification |
+| `serving_size`, `serving_unit`, `servings` | Various | Portions |
+| `calories`, `protein_g`, `carbs_g`, `fat_g`, `fiber_g` | Various | Macros |
+| `food_group` | TEXT | `grain`, `protein`, `vegetable`, `fruit`, `dairy`, `fat`, `other` |
+| `is_whole_food`, `is_processed` | BOOLEAN | Food quality flags |
+| `glycemic_index` | INT | GI value |
+
+#### `daily_wellness`
+Mental and physical wellness tracking.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `mood_score`, `anxiety_level`, `stress_level` | INT | 1-10 mental state |
+| `motivation_training`, `motivation_life`, `focus_level` | INT | 1-10 motivation |
+| `energy_level`, `fatigue_level` | INT | 1-10 energy |
+| `muscle_soreness`, `pain_level` | INT | 1-10 physical state |
+| `soreness_locations`, `pain_locations` | JSONB | Arrays of body parts |
+| `legs_feeling` | TEXT | `fresh`, `normal`, `tired`, `heavy`, `dead` |
+| `recovery_score`, `readiness_to_train` | INT | Recovery metrics |
+| `menstrual_cycle_day`, `menstrual_phase` | Various | Female-specific tracking |
+| `gratitude`, `wins`, `challenges`, `journal_entry` | TEXT | Journaling |
+
+#### `daily_biometrics`
+Body composition and vital signs.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `resting_hr`, `hrv_rmssd`, `hrv_score` | Various | Heart metrics |
+| `weight_kg`, `body_fat_pct`, `muscle_mass_kg` | DECIMAL | Body composition |
+| `blood_pressure_systolic`, `blood_pressure_diastolic` | INT | Blood pressure |
+| `blood_oxygen_pct`, `respiratory_rate` | DECIMAL | Vitals |
+| `glucose_mg_dl`, `ketones_mmol`, `lactate_mmol` | Various | Blood markers |
+| `steps_count`, `standing_hours` | INT | Activity |
+
+#### `daily_weather`
+Training conditions.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `condition` | TEXT | `sunny`, `cloudy`, `rainy`, `snowy`, etc. |
+| `temp_high_c`, `temp_low_c`, `temp_avg_c`, `feels_like_c` | DECIMAL | Temperature |
+| `wind_speed_kmh`, `wind_gust_kmh`, `wind_direction` | Various | Wind |
+| `humidity_pct`, `uv_index`, `air_quality_index` | Various | Atmosphere |
+| `pollen_level` | TEXT | `low`, `medium`, `high`, `very_high` |
+
+#### `daily_location`
+Geographic context.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `city`, `region`, `country` | TEXT | Location |
+| `lat`, `lng`, `elevation_m` | Various | Coordinates |
+| `location_type` | TEXT | `home`, `training_camp`, `race_venue`, `travel`, `vacation` |
+| `is_altitude_training`, `days_at_altitude` | Various | Altitude context |
+| `travel_day`, `time_zone_change`, `jet_lag_severity` | Various | Travel impact |
+
+#### `daily_medical`
+Health issues and medications.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `sick`, `illness_type`, `illness_severity` | Various | Illness tracking |
+| `injured`, `injury_type`, `injury_location`, `injury_severity` | Various | Injury tracking |
+| `medications`, `supplements` | JSONB | `[{name, dose, frequency}]` |
+| `doctor_visit`, `appointment_type`, `appointment_notes` | Various | Medical appointments |
+| `blood_test`, `blood_test_results` | Various | Lab results |
+
+#### `weekly_summary`
+Aggregated weekly patterns (70+ columns).
+
+| Key Columns | Description |
+|-------------|-------------|
+| `week_start`, `week_end` | Monday to Sunday |
+| `total_tss`, `total_hours`, `total_distance_km`, `total_elevation_m` | Training totals |
+| `atl_end`, `ctl_end`, `tsb_end` | PMC end-of-week values |
+| `avg_sleep_hours`, `avg_hrv`, `sleep_consistency_score` | Sleep patterns |
+| `avg_calories`, `avg_protein_g`, `nutrition_compliance_pct` | Nutrition patterns |
+| `avg_energy`, `avg_stress`, `avg_mood`, `avg_readiness` | Wellness patterns |
+| `sick_days`, `injury_days`, `weight_change_kg` | Health summary |
+| `lucy_summary`, `coach_notes`, `athlete_reflection` | Commentary |
+
+#### `monthly_summary`
+Monthly trends and progress (40+ columns).
+
+| Key Columns | Description |
+|-------------|-------------|
+| `month` | First of month |
+| `total_tss`, `total_hours`, `avg_weekly_tss` | Training volume |
+| `ftp_start`, `ftp_end`, `ftp_change` | FTP progression |
+| `weight_start_kg`, `weight_end_kg`, `w_per_kg_change` | Weight changes |
+| `limiting_factors` | JSONB array: `["sleep", "work", "travel"]` |
+| `phase` | `base`, `build`, `peak`, `recovery`, `off` |
+| `lucy_summary`, `goals_next_month` | AI analysis and planning |
+
+---
 
 ### Layer 5: Calendar & Planning
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  EVENTS                                                     │
-├─────────────────────────────────────────────────────────────┤
-│  date, name, priority (A/B/C), goal_time, goal_power        │
-└─────────────────────────────────────────────────────────────┘
+#### `events`
+Races and target events.
 
-┌─────────────────────────────────────────────────────────────┐
-│  PLANNED_WORKOUTS                                           │
-├─────────────────────────────────────────────────────────────┤
-│  scheduled_date, workout_type, duration, tss_planned        │
-│  completed, actual_tcx_file_id                              │
-└─────────────────────────────────────────────────────────────┘
+| Column | Type | Description |
+|--------|------|-------------|
+| `name`, `date` | Various | Event basics |
+| `event_type` | TEXT | `race_road`, `race_crit`, `race_tt`, `gran_fondo`, `sportive`, `other` |
+| `priority` | TEXT | `A` (key), `B` (important), `C` (training) |
+| `distance_km`, `elevation_m`, `expected_duration_hours` | Various | Course details |
+| `goal_time`, `goal_power`, `goal_description` | Various | Targets |
+| `course_profile` | TEXT | `flat`, `rolling`, `hilly`, `mountainous` |
+| `result_time`, `result_power`, `result_notes` | Various | Actual results |
 
-┌─────────────────────────────────────────────────────────────┐
-│  LIFE_EVENTS (constraints)                                  │
-├─────────────────────────────────────────────────────────────┤
-│  date, type (work/travel/family), training_impact           │
-└─────────────────────────────────────────────────────────────┘
+#### `planned_workouts`
+Scheduled training sessions.
 
-┌─────────────────────────────────────────────────────────────┐
-│  TRAVEL                                                     │
-├─────────────────────────────────────────────────────────────┤
-│  Trip details, flights, accommodation, race logistics       │
-└─────────────────────────────────────────────────────────────┘
-```
+| Column | Type | Description |
+|--------|------|-------------|
+| `scheduled_date`, `scheduled_time` | Various | When |
+| `workout_type` | TEXT | `endurance`, `tempo`, `sweet_spot`, `threshold`, `vo2max`, `anaerobic`, `sprint`, `recovery`, `strength` |
+| `title`, `description` | TEXT | Workout details |
+| `duration_planned_minutes`, `tss_planned` | INT | Targets |
+| `structure` | JSONB | `[{duration: 300, intensity: "threshold"}, ...]` |
+| `completed`, `skipped_reason` | Various | Execution status |
+| `actual_tcx_file_id`, `compliance_score` | Various | Linked actual workout |
+
+#### `life_events`
+Non-training events that affect training.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `date`, `end_date` | DATE | Event duration |
+| `event_type` | TEXT | `work`, `travel`, `family`, `social`, `vacation`, `medical` |
+| `training_impact` | TEXT | `none`, `reduced`, `blocked` |
+| `available_hours` | DECIMAL | Training time available |
+
+#### `travel`
+Comprehensive trip planning (40+ columns).
+
+| Key Columns | Description |
+|-------------|-------------|
+| `trip_name`, `purpose` | `race`, `training_camp`, `vacation`, `work` |
+| `departure_date`, `return_date`, `total_days` | Trip duration |
+| `destination_city`, `destination_country`, `destination_elevation_m` | Location |
+| `flights` | JSONB: `[{airline, flight_number, departure_airport, ...}]` |
+| `accommodation_type`, `accommodation_name`, `check_in`, `check_out` | Lodging |
+| `event_id`, `registration_confirmed`, `race_number` | Race link |
+| `travel_checklist`, `documents_needed` | JSONB arrays |
+| `total_cost_estimate`, `costs_breakdown` | Budget |
+
+---
 
 ### Layer 6: Intelligence
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  ATHLETE_INSIGHTS (learned patterns)                        │
-├─────────────────────────────────────────────────────────────┤
-│  category, pattern, data_points, correlation                │
-│  actionable_recommendation                                  │
-└─────────────────────────────────────────────────────────────┘
+#### `athlete_insights`
+AI-generated patterns and recommendations.
 
-┌─────────────────────────────────────────────────────────────┐
-│  TRAINING_FOCUS (current recommendations)                   │
-├─────────────────────────────────────────────────────────────┤
-│  recommendation, priority (do/maintain/avoid)               │
-│  rationale                                                  │
-└─────────────────────────────────────────────────────────────┘
-```
+| Column | Type | Description |
+|--------|------|-------------|
+| `insight_type` | TEXT | `strength`, `weakness`, `pattern`, `recommendation` |
+| `category` | TEXT | `sleep`, `training`, `nutrition`, `recovery` |
+| `title`, `description` | TEXT | Insight content |
+| `confidence` | INT | 0-100% confidence level |
+| `evidence` | JSONB | Data points supporting insight |
+| `actionable`, `action_suggested` | Various | What to do about it |
+| `valid_from`, `valid_until` | DATE | Insight validity period |
+
+#### `training_focus`
+Current training priorities.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `focus_area` | TEXT | `ftp`, `endurance`, `vo2max`, `sprint`, `weight_loss`, `recovery` |
+| `priority` | INT | 1-5 priority ranking |
+| `rationale` | TEXT | Why this focus |
+| `target_metrics` | JSONB | `{ftp: 280, weight: 72}` |
+| `start_date`, `end_date` | DATE | Focus period |
+| `progress_notes`, `achieved` | Various | Tracking |
+
+---
 
 ### Layer 7: Equipment & Finance
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  EQUIPMENT                                                  │
-├─────────────────────────────────────────────────────────────┤
-│  Bikes, shoes, power meters, trainers                       │
-└─────────────────────────────────────────────────────────────┘
+#### `equipment`
+Bikes, gear, and maintenance tracking.
 
-┌─────────────────────────────────────────────────────────────┐
-│  EQUIPMENT_USAGE                                            │
-├─────────────────────────────────────────────────────────────┤
-│  Which bike used on which activities                        │
-└─────────────────────────────────────────────────────────────┘
+| Column | Type | Description |
+|--------|------|-------------|
+| `equipment_type` | TEXT | `bike`, `shoes`, `helmet`, `power_meter`, `trainer`, etc. |
+| `name`, `brand`, `model` | TEXT | Identification |
+| `purchase_date`, `purchase_price`, `currency` | Various | Purchase info |
+| `bike_type` | TEXT | `road`, `tt`, `gravel`, `mtb`, `track` |
+| `frame_material` | TEXT | `carbon`, `aluminum`, `steel`, `titanium` |
+| `groupset`, `wheelset`, `weight_kg` | Various | Bike specs |
+| `service_interval_km`, `last_service_date`, `last_service_km` | Various | Maintenance |
+| `total_km`, `total_hours` | Various | Usage tracking |
+| `status` | TEXT | `active`, `backup`, `retired`, `sold` |
+| `condition` | TEXT | `excellent`, `good`, `fair`, `needs_service` |
 
-┌─────────────────────────────────────────────────────────────┐
-│  EXPENSES                                                   │
-├─────────────────────────────────────────────────────────────┤
-│  Training-related costs                                     │
-└─────────────────────────────────────────────────────────────┘
+#### `equipment_usage`
+Links equipment to activities.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `equipment_id` | UUID | FK to equipment |
+| `tcx_file_id` | UUID | FK to activity |
+| `distance_km`, `duration_hours`, `elevation_m` | Various | Usage metrics |
+
+#### `expenses`
+Training-related costs.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `category` | TEXT | `equipment`, `race_entry`, `travel`, `nutrition`, `coaching`, `membership`, `medical`, `other` |
+| `subcategory`, `description` | TEXT | Details |
+| `amount`, `currency` | Various | Cost |
+| `vendor`, `receipt_url` | TEXT | Purchase details |
+| `event_id`, `travel_id`, `equipment_id` | UUID | Linked records |
+
+---
+
+### Database Indexes
+
+Performance indexes on frequently queried columns:
+
+```sql
+-- Athlete lookup
+idx_athlete_connections_athlete, idx_signature_metrics_athlete,
+idx_power_duration_curve_athlete, idx_tcx_files_athlete_date,
+idx_training_load_athlete_date
+
+-- Daily tables (athlete_id, date)
+idx_daily_log_athlete_date, idx_daily_sleep_athlete_date,
+idx_daily_nutrition_athlete_date, idx_daily_wellness_athlete_date,
+idx_daily_biometrics_athlete_date
+
+-- Calendar
+idx_events_athlete_date, idx_planned_workouts_athlete_date
+
+-- Summaries
+idx_weekly_summary_athlete, idx_monthly_summary_athlete
 ```
 
 ---
