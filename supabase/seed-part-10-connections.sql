@@ -1,6 +1,9 @@
 -- Part 10: Athlete Connections (OAuth/API Integrations)
 -- Demo athlete connected services
 
+-- Clear existing connections first
+DELETE FROM athlete_connections WHERE athlete_id = '00000000-0000-0000-0000-000000000001';
+
 INSERT INTO athlete_connections (athlete_id, provider, provider_user_id, access_token, refresh_token, token_expires_at, scopes, last_sync_at, sync_enabled, sync_frequency, connection_status) VALUES
 -- Garmin Connect - Primary training device
 ('00000000-0000-0000-0000-000000000001', 'garmin', 'garmin_user_12345', 'encrypted_access_token_garmin', 'encrypted_refresh_token_garmin', NOW() + INTERVAL '30 days', '["activity_read", "sleep_read", "health_read"]', NOW() - INTERVAL '2 hours', true, 'hourly', 'connected'),
