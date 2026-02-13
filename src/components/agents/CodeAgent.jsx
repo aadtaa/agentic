@@ -462,7 +462,6 @@ const PipelineInfo = ({ pipeline, timing }) => {
         }}>
           {timing?.planner_ms && <TimingPill label="Plan" ms={timing.planner_ms} />}
           {timing?.code_gen_ms && <TimingPill label="CodeGen" ms={timing.code_gen_ms} />}
-          {timing?.inspector_ms && <TimingPill label="Inspect" ms={timing.inspector_ms} />}
           {timing?.execution_ms != null && <TimingPill label="Execute" ms={timing.execution_ms} />}
           {timing?.synthesis_ms && <TimingPill label="Insight" ms={timing.synthesis_ms} />}
           {timing?.total_ms && (

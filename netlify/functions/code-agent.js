@@ -1,7 +1,6 @@
 // Lucy Code Agent — Activity File Analysis Pipeline
 // Stage 1: Planner (LLM) — understands the question + file data, decides what to extract/visualize
 // Stage 2: Code Generator (LLM) — writes extraction code + chart config
-// Stage 3: Inspector (LLM) — reviews generated code for safety and correctness
 //
 // File parsing happens CLIENT-SIDE (binary FIT files can't be sent as JSON).
 // The client sends a data summary + sample points. The LLM generates code
@@ -9,9 +8,7 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 
-const PLANNER_MODEL = 'claude-sonnet-4-5-20250929'
-const CODE_GEN_MODEL = 'claude-opus-4-6'
-const INSPECTOR_MODEL = 'claude-haiku-4-5-20251001'
+const HAIKU_MODEL = 'claude-haiku-4-5-20251001'
 
 // ─────────────────────────────────────────────
 // SYSTEM PROMPTS
@@ -241,29 +238,6 @@ A function body that computes summary metrics from the raw data.
 13. Handle edge cases: empty data, single point, all-zero power, missing fields gracefully.
 14. Do NOT use ES6+ features like arrow functions, template literals, const/let, destructuring, or spread — use plain ES5 for sandbox safety.`
 
-const INSPECTOR_SYSTEM = `You are a code safety inspector for a cycling data analysis tool. You review JavaScript code that will run in a browser sandbox (via new Function()).
-
-Review the code for:
-1. SAFETY: No DOM access, no fetch/XMLHttpRequest, no eval(), no Function constructor, no prototype pollution
-2. CORRECTNESS: Returns an array of objects, handles null/undefined fields, won't throw on edge cases
-3. PERFORMANCE: Won't create infinite loops, handles large arrays efficiently, resamples if needed
-
-## OUTPUT FORMAT (JSON only)
-{
-  "safe": true|false,
-  "issues": ["list of issues found, empty if safe"],
-  "suggestions": ["optional improvements"],
-  "approved_extraction_code": "the code, possibly with minor fixes applied",
-  "approved_metrics_code": "the metrics code, possibly with minor fixes applied"
-}
-
-## AUTO-FIX RULES
-- If code is mostly fine but has minor issues, fix them and set safe=true
-- Add try/catch wrapper if missing
-- Add null checks for field access if missing
-- Add resampling if the code doesn't limit output size
-- If code is fundamentally broken or unsafe, set safe=false`
-
 const SYNTHESIZER_SYSTEM = `You are Lucy's Code Assistant — you help athletes understand their cycling activity data through visualizations and analysis.
 
 You receive the results of a code execution pipeline that processed their activity file. Your job is to provide a brief, insightful interpretation of the results.
@@ -352,7 +326,7 @@ ${JSON.stringify(samplePoints.slice(0, 10), null, 2)}`
     })
 
     const plannerResponse = await anthropic.messages.create({
-      model: PLANNER_MODEL,
+      model: HAIKU_MODEL,
       max_tokens: 3000,
       system: PLANNER_SYSTEM,
       messages: plannerMessages
@@ -401,7 +375,7 @@ ${JSON.stringify(samplePoints.slice(0, 10), null, 2)}`
   let codeOutput
   try {
     const codeGenResponse = await anthropic.messages.create({
-      model: CODE_GEN_MODEL,
+      model: HAIKU_MODEL,
       max_tokens: 8192,
       system: CODE_GEN_SYSTEM,
       messages: [{
@@ -454,83 +428,18 @@ IMPORTANT: Follow the plan's transformations EXACTLY. The analyst specified prec
 
   console.log(`[code-agent] Stage 2 Code Gen: ${stages.code_gen.ms}ms, ${stages.code_gen.series_count} series`)
 
-  // ─── STAGE 3: INSPECTOR ──────────────────────────────
-  const inspectorStart = Date.now()
-
-  let inspected
-  try {
-    const inspectorResponse = await anthropic.messages.create({
-      model: INSPECTOR_MODEL,
-      max_tokens: 4096,
-      system: INSPECTOR_SYSTEM,
-      messages: [{
-        role: 'user',
-        content: `## EXTRACTION CODE
-\`\`\`javascript
-${codeOutput.extraction_code}
-\`\`\`
-
-## METRICS CODE
-\`\`\`javascript
-${codeOutput.metrics_code || 'return []'}
-\`\`\`
-
-## DATA SUMMARY (for context)
-Fields available: ${Object.keys(dataSummary.fields || {}).join(', ')}
-Point count: ${dataSummary.point_count || 'unknown'}`
-      }]
-    })
-
-    const inspectorText = inspectorResponse.content
-      .filter(b => b.type === 'text')
-      .map(b => b.text)
-      .join('')
-
-    inspected = parseJSON(inspectorText)
-    if (!inspected) {
-      throw new Error('Inspector returned invalid JSON')
-    }
-  } catch (err) {
-    console.error('[code-agent] Inspector error, using original code:', err.message)
-    inspected = {
-      safe: true,
-      issues: [],
-      suggestions: ['Inspector failed — using original code'],
-      approved_extraction_code: codeOutput.extraction_code,
-      approved_metrics_code: codeOutput.metrics_code || 'return []'
-    }
-  }
-
-  stages.inspector = {
-    ms: Date.now() - inspectorStart,
-    safe: inspected.safe,
-    issues: inspected.issues || [],
-    suggestions: inspected.suggestions || []
-  }
-
-  console.log(`[code-agent] Stage 3 Inspector: ${stages.inspector.ms}ms, safe=${inspected.safe}, ${(inspected.issues || []).length} issues`)
-
-  if (!inspected.safe) {
-    return {
-      error: 'Generated code did not pass safety inspection. Issues: ' + (inspected.issues || []).join('; '),
-      stages,
-      timing: { total_ms: Date.now() - startTime }
-    }
-  }
-
   // ─── RESULT PACKAGE ──────────────────────────────────
   const totalMs = Date.now() - startTime
 
   return {
-    extraction_code: inspected.approved_extraction_code || codeOutput.extraction_code,
-    metrics_code: inspected.approved_metrics_code || codeOutput.metrics_code || 'return []',
+    extraction_code: codeOutput.extraction_code,
+    metrics_code: codeOutput.metrics_code || 'return []',
     chart_config: codeOutput.chart_config,
     plan,
     stages,
     timing: {
       planner_ms: stages.planner.ms,
       code_gen_ms: stages.code_gen.ms,
-      inspector_ms: stages.inspector.ms,
       total_ms: totalMs
     }
   }
@@ -543,7 +452,7 @@ Point count: ${dataSummary.point_count || 'unknown'}`
 async function synthesizeInsight(instruction, metrics, plan, anthropic) {
   try {
     const response = await anthropic.messages.create({
-      model: PLANNER_MODEL,
+      model: HAIKU_MODEL,
       max_tokens: 500,
       system: SYNTHESIZER_SYSTEM,
       messages: [{
@@ -666,7 +575,7 @@ export async function handler(event) {
       }
     }
 
-    // Full pipeline: Plan → Generate → Inspect
+    // Full pipeline: Plan → Generate
     const result = await runCodeAgent(message, dataSummary, samplePoints || [], anthropic, history)
 
     if (result.error) {

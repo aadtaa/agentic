@@ -259,7 +259,7 @@ export async function handler(event, context) {
 
     // Initial API call with tools
     let response = await anthropic.messages.create({
-      model: 'claude-opus-4-5-20251101',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 4096,
       system: LUCY_SYSTEM_PROMPT,
       messages: messages,
@@ -321,7 +321,7 @@ export async function handler(event, context) {
 
       // Continue the conversation with tool results
       response = await anthropic.messages.create({
-        model: 'claude-opus-4-5-20251101',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 4096,
         system: LUCY_SYSTEM_PROMPT,
         messages: messages,
