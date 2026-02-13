@@ -501,12 +501,42 @@ const PipelineInfo = ({ pipeline, timing }) => {
           {pipeline?.planner && (
             <div style={{ marginBottom: '12px' }}>
               <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>
-                Planner
+                Planner Analysis
               </div>
+              {pipeline.planner.intent_decoded && (
+                <div style={{
+                  padding: '8px 12px',
+                  backgroundColor: 'var(--grey-100)',
+                  borderRadius: '8px',
+                  borderLeft: '3px solid var(--accent-primary)',
+                  marginBottom: '8px',
+                  fontSize: '12px',
+                }}>
+                  <span style={{ fontWeight: 500 }}>Intent:</span> {pipeline.planner.intent_decoded}
+                </div>
+              )}
               <div>{pipeline.planner.reasoning}</div>
               <div style={{ marginTop: '4px', fontSize: '12px' }}>
                 Chart: {pipeline.planner.chart_type} — {pipeline.planner.title}
               </div>
+              {pipeline.planner.companion_series && pipeline.planner.companion_series.length > 0 && (
+                <div style={{ marginTop: '6px', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                  {pipeline.planner.companion_series.map((s, i) => (
+                    <span key={i} style={{
+                      fontSize: '11px',
+                      padding: '2px 8px',
+                      backgroundColor: 'var(--grey-100)',
+                      borderRadius: '8px',
+                      color: 'var(--text-tertiary)',
+                    }}>+ {s}</span>
+                  ))}
+                </div>
+              )}
+              {pipeline.planner.design_notes && (
+                <div style={{ marginTop: '6px', fontSize: '12px', fontStyle: 'italic', color: 'var(--text-tertiary)' }}>
+                  {pipeline.planner.design_notes}
+                </div>
+              )}
             </div>
           )}
 
@@ -738,7 +768,15 @@ const CodeAgent = () => {
 
       if (fileData) {
         requestBody.dataSummary = fileData.summary
-        requestBody.samplePoints = fileData.points.slice(0, 20)
+        // Send evenly spaced sample points so planner sees the full ride shape
+        const pts = fileData.points
+        const sampleCount = 20
+        const step = Math.max(1, Math.floor(pts.length / sampleCount))
+        const samples = []
+        for (let i = 0; i < pts.length && samples.length < sampleCount; i += step) {
+          samples.push(pts[i])
+        }
+        requestBody.samplePoints = samples
       }
 
       const response = await fetch('/.netlify/functions/code-agent', {
