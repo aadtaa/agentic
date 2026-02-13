@@ -52,6 +52,19 @@ const DataAgent = () => {
       clearTimeout(stageTimer2)
       clearTimeout(stageTimer3)
 
+      // Handle non-JSON responses (504 timeout returns HTML)
+      const contentType = response.headers.get('content-type') || ''
+      if (!contentType.includes('application/json')) {
+        const statusMsg = response.status === 504
+          ? 'The analysis timed out — the pipeline took too long. Try a simpler question.'
+          : `Server error (${response.status}). Please try again.`
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: statusMsg
+        }])
+        return
+      }
+
       const data = await response.json()
 
       if (response.ok) {
