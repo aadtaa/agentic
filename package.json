@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "functions": "node server.js",
+    "start": "node server.js & vite",
     "build": "vite build",
     "preview": "vite preview",
     "netlify": "netlify dev"
