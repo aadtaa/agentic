@@ -497,7 +497,7 @@ export async function handler(event) {
     messages.push({ role: 'user', content: message })
 
     let response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5-20250929',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 4096,
       system: DATA_ANALYST_SYSTEM_PROMPT,
       messages,
@@ -534,7 +534,7 @@ export async function handler(event) {
       messages.push({ role: 'user', content: toolResults })
 
       response = await anthropic.messages.create({
-        model: 'claude-sonnet-4-5-20250929',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 4096,
         system: DATA_ANALYST_SYSTEM_PROMPT,
         messages,
