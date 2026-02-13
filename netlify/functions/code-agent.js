@@ -263,7 +263,7 @@ async function runCodeAgent(instruction, dataSummary, samplePoints, anthropic, h
   // ─── STAGE 1: PLANNER ────────────────────────────────
   const plannerStart = Date.now()
 
-  let plan
+  let plan, plannerResponse
   try {
     const plannerMessages = []
 
@@ -322,7 +322,7 @@ Fields: ${fieldsAvailable.filter(f => f !== 'latitude' && f !== 'longitude').joi
 ${plannerFieldDetails}`
     })
 
-    const plannerResponse = await anthropic.messages.create({
+    plannerResponse = await anthropic.messages.create({
       model: HAIKU_MODEL,
       max_tokens: 1500,
       system: [{ type: 'text', text: PLANNER_SYSTEM, cache_control: { type: 'ephemeral' } }],
@@ -354,8 +354,13 @@ ${plannerFieldDetails}`
     }
   }
 
+  const plannerUsage = plannerResponse?.usage || {}
   stages.planner = {
     ms: Date.now() - plannerStart,
+    input_tokens: plannerUsage.input_tokens,
+    output_tokens: plannerUsage.output_tokens,
+    cache_read: plannerUsage.cache_read_input_tokens || 0,
+    cache_creation: plannerUsage.cache_creation_input_tokens || 0,
     reasoning: plan.reasoning,
     intent_decoded: plan.intent_decoded,
     chart_type: plan.chart_type,
@@ -364,14 +369,14 @@ ${plannerFieldDetails}`
     design_notes: plan.design_notes
   }
 
-  console.log(`[code-agent] Stage 1 Planner: ${stages.planner.ms}ms, chart_type=${plan.chart_type}`)
+  console.log(`[code-agent] Stage 1 Planner: ${stages.planner.ms}ms, in=${plannerUsage.input_tokens} out=${plannerUsage.output_tokens} cache_read=${plannerUsage.cache_read_input_tokens || 0}, chart_type=${plan.chart_type}`)
 
   // ─── STAGE 2: CODE GENERATOR ─────────────────────────
   const codeGenStart = Date.now()
 
-  let codeOutput
+  let codeOutput, codeGenResponse
   try {
-    const codeGenResponse = await anthropic.messages.create({
+    codeGenResponse = await anthropic.messages.create({
       model: HAIKU_MODEL,
       max_tokens: 8192,
       system: [{ type: 'text', text: CODE_GEN_SYSTEM, cache_control: { type: 'ephemeral' } }],
@@ -416,14 +421,19 @@ IMPORTANT: Follow the plan's transformations EXACTLY. The analyst specified prec
     }
   }
 
+  const codeGenUsage = codeGenResponse?.usage || {}
   stages.code_gen = {
     ms: Date.now() - codeGenStart,
+    input_tokens: codeGenUsage.input_tokens,
+    output_tokens: codeGenUsage.output_tokens,
+    cache_read: codeGenUsage.cache_read_input_tokens || 0,
+    cache_creation: codeGenUsage.cache_creation_input_tokens || 0,
     has_extraction: !!codeOutput.extraction_code,
     has_metrics: !!codeOutput.metrics_code,
     series_count: (codeOutput.chart_config?.series || []).length
   }
 
-  console.log(`[code-agent] Stage 2 Code Gen: ${stages.code_gen.ms}ms, ${stages.code_gen.series_count} series`)
+  console.log(`[code-agent] Stage 2 Code Gen: ${stages.code_gen.ms}ms, in=${codeGenUsage.input_tokens} out=${codeGenUsage.output_tokens} cache_read=${codeGenUsage.cache_read_input_tokens || 0}, ${stages.code_gen.series_count} series`)
 
   // ─── RESULT PACKAGE ──────────────────────────────────
   const totalMs = Date.now() - startTime
