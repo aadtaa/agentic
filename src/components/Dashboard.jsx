@@ -202,7 +202,7 @@ const Dashboard = () => {
             {renderView()}
 
             {/* Floating Assistant - shown on agent views that don't have their own chat */}
-            {activeView !== 'chat' && activeView !== 'data' && (
+            {activeView !== 'chat' && activeView !== 'data' && activeView !== 'code' && (
               <FloatingAssistant
                 placeholder={`Ask about ${activeView}...`}
               />
