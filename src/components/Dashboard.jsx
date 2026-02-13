@@ -201,8 +201,8 @@ const Dashboard = () => {
           <div style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
             {renderView()}
 
-            {/* Floating Assistant - shown on agent views */}
-            {activeView !== 'chat' && (
+            {/* Floating Assistant - shown on agent views that don't have their own chat */}
+            {activeView !== 'chat' && activeView !== 'data' && (
               <FloatingAssistant
                 placeholder={`Ask about ${activeView}...`}
               />

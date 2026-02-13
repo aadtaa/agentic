@@ -1,67 +1,294 @@
-import React from 'react'
+import React, { useState, useRef, useEffect } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 const DataAgent = () => {
-  return (
-    <div style={{ padding: '24px' }}>
-      <h2 style={{
-        fontSize: '24px',
-        fontWeight: 600,
-        color: 'var(--text-primary)',
-        marginBottom: '8px'
-      }}>
-        Data Analysis Agent
-      </h2>
-      <p style={{
-        fontSize: '14px',
-        color: 'var(--text-secondary)',
-        marginBottom: '24px'
-      }}>
-        Upload and analyze your data with AI-powered insights.
-      </p>
+  const [inputValue, setInputValue] = useState('')
+  const [messages, setMessages] = useState([])
+  const [isLoading, setIsLoading] = useState(false)
+  const messagesEndRef = useRef(null)
+  const inputRef = useRef(null)
 
-      {/* Upload Area */}
+  const quickActions = [
+    { label: "Training Load", prompt: "Analyze my current training load — CTL, ATL, TSB, and form status" },
+    { label: "Power Profile", prompt: "Show my 7-axis performance profile with strengths and weaknesses" },
+    { label: "Sleep Trends", prompt: "Analyze my sleep data from the last 7 days" },
+    { label: "Recent Activities", prompt: "Summarize my activities from the last 30 days" },
+  ]
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
+
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [])
+
+  const sendMessage = async (messageText) => {
+    if (!messageText.trim() || isLoading) return
+
+    setMessages(prev => [...prev, { role: 'user', content: messageText }])
+    setIsLoading(true)
+
+    try {
+      const history = messages.map(m => ({ role: m.role, content: m.content }))
+
+      const response = await fetch('/.netlify/functions/data-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: messageText, history })
+      })
+
+      const data = await response.json()
+
+      if (response.ok) {
+        setMessages(prev => [...prev, { role: 'assistant', content: data.response }])
+      } else {
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: 'Sorry, I encountered an error. Please try again.'
+        }])
+      }
+    } catch (error) {
+      console.error('Data chat error:', error)
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: 'Unable to connect. Please check your connection and try again.'
+      }])
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleSend = () => {
+    if (!inputValue.trim()) return
+    const message = inputValue.trim()
+    setInputValue('')
+    sendMessage(message)
+  }
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSend()
+    }
+  }
+
+  const hasMessages = messages.length > 0
+
+  return (
+    <div style={{
+      flex: 1,
+      display: 'flex',
+      flexDirection: 'column',
+      overflow: 'hidden'
+    }}>
+      {/* Chat Content */}
       <div style={{
-        border: '2px dashed var(--grey-300)',
-        borderRadius: 'var(--radius-lg)',
-        padding: '48px',
-        textAlign: 'center',
-        backgroundColor: 'var(--grey-50)',
-        marginBottom: '24px'
+        flex: 1,
+        overflowY: 'auto',
+        display: 'flex',
+        flexDirection: 'column',
       }}>
-        <svg width="48" height="48" viewBox="0 0 48 48" fill="none" style={{ marginBottom: '16px' }}>
-          <path d="M24 32V16M24 16L18 22M24 16L30 22" stroke="var(--grey-400)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-          <path d="M8 32V36C8 38.2091 9.79086 40 12 40H36C38.2091 40 40 38.2091 40 36V32" stroke="var(--grey-400)" strokeWidth="2" strokeLinecap="round"/>
-        </svg>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-          Drag and drop files here, or click to browse
-        </p>
-        <p style={{ color: 'var(--text-tertiary)', fontSize: '12px', marginTop: '8px' }}>
-          Supports CSV, JSON, Excel files
-        </p>
+        <div style={{
+          maxWidth: '720px',
+          width: '100%',
+          margin: '0 auto',
+          padding: '20px 24px',
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+        }}>
+          {hasMessages ? (
+            <div style={{ flex: 1 }}>
+              {messages.map((msg, idx) => (
+                <div key={idx}>
+                  {msg.role === 'user' ? (
+                    <div style={{
+                      display: 'flex',
+                      justifyContent: 'flex-end',
+                      marginBottom: '24px',
+                    }}>
+                      <div style={{
+                        backgroundColor: 'var(--grey-100)',
+                        borderRadius: '20px',
+                        padding: '12px 20px',
+                        fontSize: '15px',
+                        color: 'var(--text-primary)',
+                        maxWidth: '80%',
+                      }}>
+                        {msg.content}
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ marginBottom: '24px' }} className="markdown-content">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {msg.content}
+                      </ReactMarkdown>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {isLoading && (
+                <div style={{ marginBottom: '24px' }}>
+                  <p style={{
+                    fontSize: '15px',
+                    color: 'var(--text-tertiary)',
+                    lineHeight: 1.7,
+                    margin: 0,
+                  }}>
+                    <span className="typing-dots">Analyzing</span>
+                  </p>
+                </div>
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+          ) : (
+            <div style={{
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              textAlign: 'center',
+            }}>
+              {/* Data Analysis Icon */}
+              <div style={{
+                width: 56,
+                height: 56,
+                borderRadius: '16px',
+                backgroundColor: 'var(--grey-100)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}>
+                <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                  <path d="M4 22L9 14L14 17L19 9L24 12" stroke="var(--text-primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  <circle cx="9" cy="14" r="2" fill="var(--accent-primary)"/>
+                  <circle cx="14" cy="17" r="2" fill="var(--accent-primary)"/>
+                  <circle cx="19" cy="9" r="2" fill="var(--accent-primary)"/>
+                </svg>
+              </div>
+              <h1 style={{
+                fontSize: '36px',
+                fontWeight: 400,
+                color: 'var(--text-primary)',
+                margin: '32px 0 0 0',
+                lineHeight: 1.2,
+                letterSpacing: '-0.02em',
+              }}>
+                Data Analysis<br />
+                <span style={{ fontWeight: 700 }}>Agent.</span>
+              </h1>
+              <p style={{
+                fontSize: '16px',
+                color: 'var(--text-secondary)',
+                maxWidth: '420px',
+                lineHeight: 1.6,
+                margin: '20px 0 0 0',
+              }}>
+                Query, explore, and analyze your training data. Ask about trends, compare metrics, and uncover patterns.
+              </p>
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Stats Cards */}
+      {/* Input Section */}
       <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(3, 1fr)',
-        gap: '16px'
+        padding: '24px',
+        backgroundColor: 'var(--bg-primary)',
+        borderTop: '1px solid var(--grey-100)',
       }}>
-        {[
-          { label: 'Datasets', value: '0', icon: '📊' },
-          { label: 'Insights', value: '0', icon: '💡' },
-          { label: 'Reports', value: '0', icon: '📄' }
-        ].map((stat, idx) => (
-          <div key={idx} style={{
+        <div style={{
+          maxWidth: '720px',
+          margin: '0 auto',
+        }}>
+          {/* Input Box */}
+          <div style={{
             backgroundColor: 'var(--grey-100)',
-            borderRadius: 'var(--radius-md)',
-            padding: '20px',
-            textAlign: 'center'
+            borderRadius: '16px',
+            padding: '16px 20px',
+            marginBottom: '16px',
           }}>
-            <div style={{ fontSize: '24px', marginBottom: '8px' }}>{stat.icon}</div>
-            <div style={{ fontSize: '24px', fontWeight: 600, color: 'var(--text-primary)' }}>{stat.value}</div>
-            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{stat.label}</div>
+            <input
+              ref={inputRef}
+              type="text"
+              placeholder="Ask about your data..."
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyDown={handleKeyDown}
+              disabled={isLoading}
+              style={{
+                width: '100%',
+                backgroundColor: 'transparent',
+                border: 'none',
+                outline: 'none',
+                color: 'var(--text-primary)',
+                fontSize: '15px',
+                fontFamily: 'inherit',
+              }}
+            />
+            <div style={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              marginTop: '16px',
+            }}>
+              <button
+                onClick={handleSend}
+                disabled={!inputValue.trim() || isLoading}
+                style={{
+                  backgroundColor: inputValue.trim() && !isLoading ? 'var(--accent-primary)' : 'var(--grey-300)',
+                  border: 'none',
+                  borderRadius: '10px',
+                  width: '36px',
+                  height: '36px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: inputValue.trim() && !isLoading ? 'pointer' : 'default',
+                  transition: 'background-color 0.15s ease',
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M8 12V4M8 4L4 8M8 4L12 8" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            </div>
           </div>
-        ))}
+
+          {/* Quick Action Pills */}
+          <div style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            justifyContent: 'center',
+            gap: '8px',
+          }}>
+            {quickActions.map((action, idx) => (
+              <button
+                key={idx}
+                onClick={() => sendMessage(action.prompt)}
+                disabled={isLoading}
+                style={{
+                  backgroundColor: 'var(--grey-100)',
+                  border: 'none',
+                  borderRadius: '20px',
+                  padding: '10px 18px',
+                  fontSize: '14px',
+                  color: 'var(--text-primary)',
+                  cursor: isLoading ? 'default' : 'pointer',
+                  fontFamily: 'inherit',
+                  transition: 'background-color 0.2s',
+                  opacity: isLoading ? 0.5 : 1,
+                }}
+                onMouseEnter={(e) => { if (!isLoading) e.currentTarget.style.backgroundColor = 'var(--grey-200)' }}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'var(--grey-100)'}
+              >
+                {action.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   )
