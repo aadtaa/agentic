@@ -8,6 +8,7 @@
   port = 8888
   targetPort = 3000
   autoLaunch = false
+  functionsTimeout = 120
 
 [[redirects]]
   from = "/*"
@@ -16,3 +17,19 @@
 
 [functions]
   node_bundler = "esbuild"
+  external_node_modules = ["@anthropic-ai/sdk"]
+
+[functions."data-agent"]
+  timeout = 60
+
+[functions."code-agent"]
+  timeout = 60
+
+[functions."code-agent-synthesize"]
+  timeout = 30
+
+[functions."chat"]
+  timeout = 30
+
+[functions."data-chat"]
+  timeout = 30
