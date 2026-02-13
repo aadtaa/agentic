@@ -7,8 +7,9 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/.netlify/functions': {
-        target: 'http://localhost:8888',
-        changeOrigin: true
+        target: 'http://localhost:9999',
+        changeOrigin: true,
+        timeout: 120000
       }
     }
   }

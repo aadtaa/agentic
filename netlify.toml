@@ -9,6 +9,7 @@
   targetPort = 3000
   autoLaunch = false
   functionsTimeout = 120
+  edgeFunctions = false
 
 [[redirects]]
   from = "/*"
