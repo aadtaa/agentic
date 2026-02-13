@@ -140,6 +140,13 @@ async function main() {
       return
     }
 
+    // Health check for Railway
+    if (req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ status: 'ok' }))
+      return
+    }
+
     // Route: /.netlify/functions/<name>  →  API handler
     const match = req.url.match(/^\/.netlify\/functions\/([a-zA-Z0-9_-]+)/)
     if (match) {
