@@ -78,7 +78,7 @@ Don't just compute averages. Think about what reveals performance:
 
 ## OUTPUT FORMAT (JSON only, no markdown fences)
 {
-  "user_facing_plan": "2-4 sentences written TO the athlete explaining what you're going to analyze, what companion data you're adding, and WHY it matters for their training. Be specific — mention the actual fields and metrics by name. Sound like a knowledgeable coach, not a chatbot.",
+  "user_facing_plan": "Write 3-6 conversational sentences TO the athlete as if you're sitting next to them at a cafe reviewing their ride. Flow naturally from one thought to the next — no bullet points, no bold markers, no schematic lists. Mention specific fields and metrics by name but weave them into the narrative. Example tone: 'I'll start by plotting your power with a 30-second rolling average so we can see past the spikes to your real effort trend. Since a coach never looks at power alone, I'm layering in your heart rate to check for cardiac drift — if your HR climbs while power stays flat in the second half, that tells us something about your aerobic ceiling today. I'll also compute your Normalized Power, Variability Index, and TSS to get the full load picture.' — natural, specific, coach-like.",
   "technical_plan": {
     "intent": "decoded user intent in one sentence",
     "chart_type": "composed|line|bar|area|scatter",
@@ -240,8 +240,9 @@ ${JSON.stringify(samplePoints.slice(0, 5), null, 2)}`
   })
 
   const response = await anthropic.messages.create({
-    model: OPUS_MODEL,
-    max_tokens: 2048,
+    model: HAIKU_MODEL,
+    max_tokens: 4096,
+    temperature: 0.9,
     system: [{ type: 'text', text: PLANNER_SYSTEM, cache_control: { type: 'ephemeral' } }],
     messages
   })
@@ -249,7 +250,7 @@ ${JSON.stringify(samplePoints.slice(0, 5), null, 2)}`
   const usage = response.usage || {}
   const elapsed = Date.now() - startTime
 
-  console.log(`[code-agent] PLAN: ${elapsed}ms, in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens || 0}`)
+  console.log(`[code-agent] PLAN (Haiku): ${elapsed}ms, in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens || 0}`)
 
   const text = response.content
     .filter(b => b.type === 'text')
@@ -306,7 +307,8 @@ Implement the analysis plan above. Generate extraction_code, metrics_code, and c
 
   const response = await anthropic.messages.create({
     model: OPUS_MODEL,
-    max_tokens: 8192,
+    max_tokens: 16384,
+    temperature: 0.3,
     system: [{ type: 'text', text: CODEGEN_SYSTEM, cache_control: { type: 'ephemeral' } }],
     messages
   })
@@ -314,7 +316,7 @@ Implement the analysis plan above. Generate extraction_code, metrics_code, and c
   const usage = response.usage || {}
   const elapsed = Date.now() - startTime
 
-  console.log(`[code-agent] GENERATE: ${elapsed}ms, in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens || 0}`)
+  console.log(`[code-agent] GENERATE (Opus): ${elapsed}ms, in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens || 0}`)
 
   const text = response.content
     .filter(b => b.type === 'text')
