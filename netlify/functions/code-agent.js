@@ -324,7 +324,7 @@ ${plannerFieldDetails}`
 
     plannerResponse = await anthropic.messages.create({
       model: HAIKU_MODEL,
-      max_tokens: 1500,
+      max_tokens: 3000,
       system: [{ type: 'text', text: PLANNER_SYSTEM, cache_control: { type: 'ephemeral' } }],
       messages: plannerMessages
     })
