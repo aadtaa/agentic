@@ -240,7 +240,7 @@ ${JSON.stringify(samplePoints.slice(0, 5), null, 2)}`
   })
 
   const response = await anthropic.messages.create({
-    model: OPUS_MODEL,
+    model: HAIKU_MODEL,
     max_tokens: 4096,
     temperature: 0.9,
     system: [{ type: 'text', text: PLANNER_SYSTEM, cache_control: { type: 'ephemeral' } }],
@@ -250,7 +250,7 @@ ${JSON.stringify(samplePoints.slice(0, 5), null, 2)}`
   const usage = response.usage || {}
   const elapsed = Date.now() - startTime
 
-  console.log(`[code-agent] PLAN (Opus): ${elapsed}ms, in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens || 0}`)
+  console.log(`[code-agent] PLAN (Haiku): ${elapsed}ms, in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens || 0}`)
 
   const text = response.content
     .filter(b => b.type === 'text')
