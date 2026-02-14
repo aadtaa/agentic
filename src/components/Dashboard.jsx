@@ -7,6 +7,7 @@ import DataAgent from './agents/DataAgent'
 import CodeAgent from './agents/CodeAgent'
 import ResearchAgent from './agents/ResearchAgent'
 import WritingAgent from './agents/WritingAgent'
+import CodeAgentTwo from './agents/CodeAgentTwo'
 import DataViewer from './DataViewer'
 import Logo from './Logo'
 
@@ -60,6 +61,16 @@ const Dashboard = () => {
           <path d="M6 5L3 9L6 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
           <path d="M12 5L15 9L12 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
           <path d="M10 3L8 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
+      )
+    },
+    {
+      id: 'code2',
+      label: 'Code Assistant 2',
+      appView: 'code2',
+      icon: (
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+          <path d="M10 2L4 10H9L8 16L14 8H9L10 2Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
       )
     },
@@ -131,6 +142,8 @@ const Dashboard = () => {
         return <DataViewer />
       case 'code':
         return <CodeAgent />
+      case 'code2':
+        return <CodeAgentTwo />
       case 'research':
         return <ResearchAgent />
       case 'writing':
@@ -202,7 +215,7 @@ const Dashboard = () => {
             {renderView()}
 
             {/* Floating Assistant - shown on agent views that don't have their own chat */}
-            {activeView !== 'chat' && activeView !== 'data' && activeView !== 'code' && (
+            {activeView !== 'chat' && activeView !== 'data' && activeView !== 'code' && activeView !== 'code2' && (
               <FloatingAssistant
                 placeholder={`Ask about ${activeView}...`}
               />
