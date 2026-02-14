@@ -465,7 +465,7 @@ const MetricsDisplay = ({ metrics }) => {
 // ─────────────────────────────────────────────
 
 // Typewriter hook — reveals text word-by-word at reading pace
-const useTypewriter = (text, wordsPerSecond = 18) => {
+const useTypewriter = (text, wordsPerSecond = 5) => {
   const words = useMemo(() => (text || '').split(/(\s+)/), [text])
   const [visibleCount, setVisibleCount] = useState(0)
   const [done, setDone] = useState(false)
@@ -502,7 +502,7 @@ const PlanCard = ({ plan, isGenerating }) => {
 
   const userPlan = plan.user_facing_plan || ''
   const tech = plan.technical_plan || {}
-  const { displayed, done: typewriterDone } = useTypewriter(userPlan, 18)
+  const { displayed, done: typewriterDone } = useTypewriter(userPlan, 5)
 
   return (
     <div style={{
