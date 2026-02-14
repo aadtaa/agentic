@@ -12,6 +12,15 @@ import {
 // FILE PARSERS (client-side)
 // ─────────────────────────────────────────────
 
+// Helper: find element text by tag name, falling back to namespace-aware search.
+// TCX extensions (Watts, Speed, etc.) live in a Garmin namespace and
+// getElementsByTagName alone won't match them in XML mode.
+function xmlText(parent, tagName) {
+  const el = parent.getElementsByTagName(tagName)[0]
+    || parent.getElementsByTagNameNS('*', tagName)[0]
+  return el ? el.textContent : null
+}
+
 function parseTCX(text) {
   const parser = new DOMParser()
   const doc = parser.parseFromString(text, 'application/xml')
@@ -21,17 +30,25 @@ function parseTCX(text) {
 
   for (let i = 0; i < tps.length; i++) {
     const tp = tps[i]
-    const time = tp.getElementsByTagName('Time')[0]?.textContent
+    const time = xmlText(tp, 'Time')
     if (!startTime && time) startTime = new Date(time)
 
-    const lat = tp.getElementsByTagName('LatitudeDegrees')[0]?.textContent
-    const lon = tp.getElementsByTagName('LongitudeDegrees')[0]?.textContent
-    const alt = tp.getElementsByTagName('AltitudeMeters')[0]?.textContent
-    const dist = tp.getElementsByTagName('DistanceMeters')[0]?.textContent
-    const hr = tp.getElementsByTagName('Value')[0]?.textContent
-    const cad = tp.getElementsByTagName('Cadence')[0]?.textContent
-    const speed = tp.getElementsByTagName('Speed')[0]?.textContent
-    const watts = tp.getElementsByTagName('Watts')[0]?.textContent
+    const lat = xmlText(tp, 'LatitudeDegrees')
+    const lon = xmlText(tp, 'LongitudeDegrees')
+    const alt = xmlText(tp, 'AltitudeMeters')
+    const dist = xmlText(tp, 'DistanceMeters')
+    const cad = xmlText(tp, 'Cadence')
+
+    // HR lives inside <HeartRateBpm><Value>…</Value></HeartRateBpm>
+    const hrBpm = tp.getElementsByTagName('HeartRateBpm')[0]
+      || tp.getElementsByTagNameNS('*', 'HeartRateBpm')[0]
+    const hr = hrBpm ? xmlText(hrBpm, 'Value') : null
+
+    // Power and Speed live inside <Extensions><TPX xmlns="…"> (Garmin namespace)
+    const watts = xmlText(tp, 'Watts')
+    const speed = xmlText(tp, 'Speed')
+    // Some devices use <Power> instead of <Watts>
+    const power = watts || xmlText(tp, 'Power')
 
     const pt = {}
     if (time && startTime) pt.elapsed_seconds = (new Date(time) - startTime) / 1000
@@ -43,7 +60,7 @@ function parseTCX(text) {
     if (hr) pt.heart_rate = parseInt(hr)
     if (cad) pt.cadence = parseInt(cad)
     if (speed) pt.speed = parseFloat(speed)
-    if (watts) pt.power = parseInt(watts)
+    if (power) pt.power = parseInt(power)
 
     if (Object.keys(pt).length > 0) points.push(pt)
   }
@@ -282,6 +299,9 @@ const DynamicChart = ({ data, config }) => {
   const ChartComponent = chartComponents[config.type] || ComposedChart
   const series = config.series || []
 
+  // Detect if any series uses a right Y-axis
+  const hasRightAxis = series.some(s => s.yAxisId === 'right')
+
   return (
     <div style={{
       backgroundColor: 'var(--grey-50, #f8f8fa)',
@@ -301,7 +321,7 @@ const DynamicChart = ({ data, config }) => {
       )}
 
       <ResponsiveContainer width="100%" height={320}>
-        <ChartComponent data={data} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+        <ChartComponent data={data} margin={{ top: 5, right: hasRightAxis ? 20 : 20, bottom: 5, left: 0 }}>
           {config.grid !== false && <CartesianGrid strokeDasharray="3 3" stroke="var(--grey-200, #eee)" />}
 
           <XAxis
@@ -309,10 +329,23 @@ const DynamicChart = ({ data, config }) => {
             tick={{ fontSize: 11, fill: 'var(--text-tertiary)' }}
             label={config.xLabel ? { value: config.xLabel, position: 'insideBottom', offset: -5, style: { fontSize: 11, fill: 'var(--text-secondary)' } } : undefined}
           />
+
+          {/* Left Y-axis (default) */}
           <YAxis
+            yAxisId="left"
             tick={{ fontSize: 11, fill: 'var(--text-tertiary)' }}
             label={config.yLabel ? { value: config.yLabel, angle: -90, position: 'insideLeft', style: { fontSize: 11, fill: 'var(--text-secondary)' } } : undefined}
           />
+
+          {/* Right Y-axis (only if series use it) */}
+          {hasRightAxis && (
+            <YAxis
+              yAxisId="right"
+              orientation="right"
+              tick={{ fontSize: 11, fill: 'var(--text-tertiary)' }}
+              label={config.yLabelRight ? { value: config.yLabelRight, angle: 90, position: 'insideRight', style: { fontSize: 11, fill: 'var(--text-secondary)' } } : undefined}
+            />
+          )}
 
           {config.tooltip !== false && (
             <Tooltip
@@ -332,6 +365,7 @@ const DynamicChart = ({ data, config }) => {
               key={i}
               y={rl.y}
               x={rl.x}
+              yAxisId={rl.yAxisId || 'left'}
               label={{ value: rl.label, position: 'right', style: { fontSize: 11, fill: rl.color || '#999' } }}
               stroke={rl.color || '#999'}
               strokeDasharray={rl.strokeDasharray || '5 5'}
@@ -346,6 +380,7 @@ const DynamicChart = ({ data, config }) => {
               key: i,
               dataKey: s.key,
               name: s.label || s.key,
+              yAxisId: s.yAxisId || 'left',
               stroke: s.color || `hsl(${i * 60 + 210}, 70%, 55%)`,
               fill: s.color || `hsl(${i * 60 + 210}, 70%, 55%)`,
               strokeWidth: s.strokeWidth || 2,
@@ -426,6 +461,97 @@ const MetricsDisplay = ({ metrics }) => {
 }
 
 // ─────────────────────────────────────────────
+// PLAN CARD — shown to user while code generates
+// ─────────────────────────────────────────────
+
+const PlanCard = ({ plan, isGenerating }) => {
+  if (!plan) return null
+
+  const userPlan = plan.user_facing_plan || ''
+  const tech = plan.technical_plan || {}
+
+  return (
+    <div style={{
+      backgroundColor: 'var(--grey-50, #f8f8fa)',
+      borderRadius: '12px',
+      padding: '16px 20px',
+      marginBottom: '12px',
+      borderLeft: '3px solid var(--accent-primary, #2F71FF)',
+    }}>
+      {/* Coach's plan text */}
+      <div style={{
+        fontSize: '14px',
+        lineHeight: 1.7,
+        color: 'var(--text-primary)',
+      }}>
+        {userPlan}
+      </div>
+
+      {/* Companion data tags */}
+      {tech.companion_series && tech.companion_series.length > 0 && (
+        <div style={{
+          display: 'flex',
+          gap: '6px',
+          flexWrap: 'wrap',
+          marginTop: '10px',
+        }}>
+          {tech.companion_series.map((s, i) => (
+            <span key={i} style={{
+              fontSize: '11px',
+              padding: '3px 10px',
+              backgroundColor: 'var(--grey-100, #f0f0f2)',
+              borderRadius: '8px',
+              color: 'var(--text-secondary)',
+            }}>
+              + {typeof s === 'string' ? s : (s.label || s.field)}
+              {s.reason && (
+                <span style={{ color: 'var(--text-tertiary)', marginLeft: '4px' }}>
+                  ({s.reason})
+                </span>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Metrics that will be computed */}
+      {tech.metrics && tech.metrics.length > 0 && (
+        <div style={{
+          display: 'flex',
+          gap: '6px',
+          flexWrap: 'wrap',
+          marginTop: '8px',
+        }}>
+          {tech.metrics.map((m, i) => (
+            <span key={i} style={{
+              fontSize: '11px',
+              padding: '3px 10px',
+              backgroundColor: 'rgba(47, 113, 255, 0.08)',
+              borderRadius: '8px',
+              color: 'var(--accent-primary, #2F71FF)',
+              fontWeight: 500,
+            }}>
+              {m}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Generating indicator */}
+      {isGenerating && (
+        <div style={{
+          marginTop: '12px',
+          fontSize: '13px',
+          color: 'var(--text-tertiary)',
+        }}>
+          <span className="typing-dots">Generating visualization code</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────
 // PIPELINE INFO (expandable timing + details)
 // ─────────────────────────────────────────────
 
@@ -461,7 +587,7 @@ const PipelineInfo = ({ pipeline, timing }) => {
           flexWrap: 'wrap',
         }}>
           {timing?.planner_ms && <TimingPill label="Plan" ms={timing.planner_ms} />}
-          {timing?.code_gen_ms && <TimingPill label="CodeGen" ms={timing.code_gen_ms} />}
+          {(timing?.codegen_ms || timing?.code_gen_ms) && <TimingPill label="CodeGen" ms={timing.codegen_ms || timing.code_gen_ms} />}
           {timing?.execution_ms != null && <TimingPill label="Execute" ms={timing.execution_ms} />}
           {timing?.synthesis_ms && <TimingPill label="Insight" ms={timing.synthesis_ms} />}
           {timing?.total_ms && (
@@ -497,69 +623,15 @@ const PipelineInfo = ({ pipeline, timing }) => {
           color: 'var(--text-secondary)',
           lineHeight: 1.6,
         }}>
-          {pipeline?.planner && (
-            <div style={{ marginBottom: '12px' }}>
-              <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>
-                Planner Analysis
-              </div>
-              {pipeline.planner.intent_decoded && (
-                <div style={{
-                  padding: '8px 12px',
-                  backgroundColor: 'var(--grey-100)',
-                  borderRadius: '8px',
-                  borderLeft: '3px solid var(--accent-primary)',
-                  marginBottom: '8px',
-                  fontSize: '12px',
-                }}>
-                  <span style={{ fontWeight: 500 }}>Intent:</span> {pipeline.planner.intent_decoded}
-                </div>
-              )}
-              <div>{pipeline.planner.reasoning}</div>
-              <div style={{ marginTop: '4px', fontSize: '12px' }}>
-                Chart: {pipeline.planner.chart_type} — {pipeline.planner.title}
-              </div>
-              {pipeline.planner.companion_series && pipeline.planner.companion_series.length > 0 && (
-                <div style={{ marginTop: '6px', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                  {pipeline.planner.companion_series.map((s, i) => (
-                    <span key={i} style={{
-                      fontSize: '11px',
-                      padding: '2px 8px',
-                      backgroundColor: 'var(--grey-100)',
-                      borderRadius: '8px',
-                      color: 'var(--text-tertiary)',
-                    }}>+ {s}</span>
-                  ))}
-                </div>
-              )}
-              {pipeline.planner.design_notes && (
-                <div style={{ marginTop: '6px', fontSize: '12px', fontStyle: 'italic', color: 'var(--text-tertiary)' }}>
-                  {pipeline.planner.design_notes}
-                </div>
-              )}
-            </div>
-          )}
-
-          {pipeline?.inspector && (pipeline.inspector.issues || []).length > 0 && (
-            <div style={{ marginBottom: '12px' }}>
-              <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>
-                Inspector Issues
-              </div>
-              {pipeline.inspector.issues.map((issue, i) => (
-                <div key={i} style={{ fontSize: '12px', marginBottom: '2px' }}>- {issue}</div>
-              ))}
-            </div>
-          )}
-
-          {pipeline?.inspector && (pipeline.inspector.suggestions || []).length > 0 && (
-            <div>
-              <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>
-                Suggestions
-              </div>
-              {pipeline.inspector.suggestions.map((s, i) => (
-                <div key={i} style={{ fontSize: '12px', marginBottom: '2px' }}>- {s}</div>
-              ))}
-            </div>
-          )}
+          <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '8px' }}>
+            Pipeline Details
+          </div>
+          <div style={{ fontSize: '12px' }}>
+            {timing?.planner_ms && <div>Plan (Opus): {(timing.planner_ms / 1000).toFixed(1)}s</div>}
+            {(timing?.codegen_ms || timing?.code_gen_ms) && <div>Code Generation (Opus): {((timing.codegen_ms || timing.code_gen_ms) / 1000).toFixed(1)}s</div>}
+            {timing?.execution_ms != null && <div>Client Execution: {timing.execution_ms}ms</div>}
+            {timing?.synthesis_ms && <div>Synthesis (Haiku): {(timing.synthesis_ms / 1000).toFixed(1)}s</div>}
+          </div>
         </div>
       )}
     </div>
@@ -741,6 +813,40 @@ const CodeAgent = () => {
 
   // ─── MESSAGE SENDING ──────────────────────────────
 
+  // Build sample points for the LLM context
+  const buildSamples = useCallback(() => {
+    if (!fileData) return null
+    const pts = fileData.points
+    const sampleCount = 20
+    const step = Math.max(1, Math.floor(pts.length / sampleCount))
+    const samples = []
+    for (let i = 0; i < pts.length && samples.length < sampleCount; i += step) {
+      samples.push(pts[i])
+    }
+    return samples
+  }, [fileData])
+
+  // Helper: call code-agent with proper error handling
+  const callAgent = async (body) => {
+    const response = await fetch('/.netlify/functions/code-agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+    const contentType = response.headers.get('content-type') || ''
+    if (!contentType.includes('application/json')) {
+      const statusMsg = response.status === 504
+        ? 'The analysis timed out — the request took too long. Try a simpler question or a smaller file.'
+        : `Server error (${response.status}). Please try again.`
+      return { type: 'error', response: statusMsg }
+    }
+    const data = await response.json()
+    if (!response.ok) {
+      return { type: 'error', response: data.error || 'Sorry, I encountered an error.' }
+    }
+    return data
+  }
+
   const sendMessage = async (messageText) => {
     if (!messageText.trim() || isLoading) return
 
@@ -754,104 +860,78 @@ const CodeAgent = () => {
         content: typeof m.content === 'string' ? m.content : 'Visualization result'
       }))
 
-      // Simulate stage progression
-      const stageTimer1 = setTimeout(() => setLoadingStage('Generating code...'), 1000)
-      const stageTimer2 = setTimeout(() => setLoadingStage('Inspecting code...'), 3000)
-      const stageTimer3 = setTimeout(() => setLoadingStage('Executing...'), 5000)
+      // ─── CHAT MODE (no file) ────────────────────
+      if (!fileData) {
+        const data = await callAgent({ message: messageText, history, mode: 'chat' })
+        if (data.type === 'error') {
+          setMessages(prev => [...prev, { role: 'assistant', content: data.response }])
+        } else {
+          setMessages(prev => [...prev, { role: 'assistant', content: data.response }])
+        }
+        return
+      }
 
-      const requestBody = {
+      // ─── TWO-PHASE ANALYSIS PIPELINE ────────────
+
+      const samples = buildSamples()
+      const baseBody = {
         message: messageText,
         history,
-        mode: fileData ? 'analyze' : 'chat'
+        dataSummary: fileData.summary,
+        samplePoints: samples
       }
 
-      if (fileData) {
-        requestBody.dataSummary = fileData.summary
-        // Send evenly spaced sample points so planner sees the full ride shape
-        const pts = fileData.points
-        const sampleCount = 20
-        const step = Math.max(1, Math.floor(pts.length / sampleCount))
-        const samples = []
-        for (let i = 0; i < pts.length && samples.length < sampleCount; i += step) {
-          samples.push(pts[i])
-        }
-        requestBody.samplePoints = samples
-      }
+      // PHASE 1: Plan — get the coach's analysis plan
+      const planData = await callAgent({ ...baseBody, phase: 'plan' })
 
-      const response = await fetch('/.netlify/functions/code-agent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody)
-      })
-
-      clearTimeout(stageTimer1)
-      clearTimeout(stageTimer2)
-      clearTimeout(stageTimer3)
-
-      // Handle non-JSON responses (504 timeout returns HTML)
-      const contentType = response.headers.get('content-type') || ''
-      if (!contentType.includes('application/json')) {
-        const statusMsg = response.status === 504
-          ? 'The analysis timed out — the request took too long. Try a simpler question or a smaller file.'
-          : `Server error (${response.status}). Please try again.`
-        setMessages(prev => [...prev, {
-          role: 'assistant',
-          content: statusMsg
-        }])
+      if (planData.type === 'error') {
+        setMessages(prev => [...prev, { role: 'assistant', content: planData.response }])
         return
       }
 
-      const data = await response.json()
+      // Show the plan immediately while code generates
+      const planMsgIdx = Date.now() // unique key
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        type: 'plan',
+        plan: planData.plan,
+        _key: planMsgIdx,
+        isGenerating: true,
+        timing: { planner_ms: planData.timing?.planner_ms }
+      }])
 
-      if (!response.ok) {
-        setMessages(prev => [...prev, {
-          role: 'assistant',
-          content: data.error || 'Sorry, I encountered an error. Please try again.'
-        }])
+      setLoadingStage('Generating visualization code...')
+
+      // PHASE 2: Generate — get the code using the plan
+      const codeData = await callAgent({ ...baseBody, phase: 'generate', plan: planData.plan })
+
+      if (codeData.type === 'error') {
+        // Update the plan message to not show generating state
+        setMessages(prev => prev.map(m =>
+          m._key === planMsgIdx ? { ...m, isGenerating: false } : m
+        ))
+        setMessages(prev => [...prev, { role: 'assistant', content: codeData.response }])
         return
       }
 
-      // CHAT response (no file)
-      if (data.type === 'chat') {
-        setMessages(prev => [...prev, {
-          role: 'assistant',
-          content: data.response
-        }])
-        return
-      }
-
-      // ERROR response
-      if (data.type === 'error') {
-        setMessages(prev => [...prev, {
-          role: 'assistant',
-          content: data.response,
-          pipeline: data.pipeline,
-          timing: data.timing
-        }])
-        return
-      }
-
-      // VISUALIZATION response — execute code client-side
-      setLoadingStage('Rendering visualization...')
-
+      // Execute extraction code client-side
+      setLoadingStage('Executing analysis...')
       const execStart = Date.now()
 
-      // Execute extraction code
-      const extractionResult = executeSandbox(data.extraction_code, fileData.points)
+      const extractionResult = executeSandbox(codeData.extraction_code, fileData.points)
       if (!extractionResult.success) {
+        setMessages(prev => prev.map(m =>
+          m._key === planMsgIdx ? { ...m, isGenerating: false } : m
+        ))
         setMessages(prev => [...prev, {
           role: 'assistant',
-          content: `Code execution failed: ${extractionResult.error}. Let me try a different approach.`,
-          pipeline: data.pipeline,
-          timing: data.timing
+          content: `Code execution failed: ${extractionResult.error}. Let me try a different approach.`
         }])
         return
       }
 
-      // Execute metrics code
-      const metricsResult = executeSandbox(data.metrics_code, fileData.points)
+      const metricsResult = executeSandbox(codeData.metrics_code, fileData.points)
       const metrics = metricsResult.success ? metricsResult.data : []
-
       const executionMs = Date.now() - execStart
 
       // Get synthesis insight
@@ -865,7 +945,7 @@ const CodeAgent = () => {
           body: JSON.stringify({
             instruction: messageText,
             metrics,
-            plan: data.plan
+            plan: planData.plan?.technical_plan || {}
           })
         })
         if (synthResponse.ok) {
@@ -877,22 +957,28 @@ const CodeAgent = () => {
       }
       const synthesisMs = Date.now() - synthStart
 
-      // Add visualization message
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        type: 'visualization',
-        chartData: extractionResult.data,
-        chartConfig: data.chart_config,
-        metrics,
-        insight,
-        pipeline: data.pipeline,
-        timing: {
-          ...data.timing,
-          execution_ms: executionMs,
-          synthesis_ms: synthesisMs,
-          total_ms: (data.timing?.total_ms || 0) + executionMs + synthesisMs
-        }
-      }])
+      // Replace the plan message with the full visualization message
+      // (plan card is embedded inside the visualization message)
+      setMessages(prev => prev.map(m =>
+        m._key === planMsgIdx
+          ? {
+              role: 'assistant',
+              type: 'visualization',
+              plan: planData.plan,
+              chartData: extractionResult.data,
+              chartConfig: codeData.chart_config,
+              metrics,
+              insight,
+              timing: {
+                planner_ms: planData.timing?.planner_ms,
+                codegen_ms: codeData.timing?.codegen_ms,
+                execution_ms: executionMs,
+                synthesis_ms: synthesisMs,
+                total_ms: (planData.timing?.planner_ms || 0) + (codeData.timing?.codegen_ms || 0) + executionMs + synthesisMs
+              }
+            }
+          : m
+      ))
 
     } catch (error) {
       console.error('Code agent error:', error)
@@ -997,8 +1083,16 @@ const CodeAgent = () => {
                         {msg.content}
                       </div>
                     </div>
+                  ) : msg.type === 'plan' ? (
+                    /* Plan card shown while code generates */
+                    <div style={{ marginBottom: '24px' }}>
+                      <PlanCard plan={msg.plan} isGenerating={msg.isGenerating} />
+                    </div>
                   ) : msg.type === 'visualization' ? (
                     <div style={{ marginBottom: '24px' }}>
+                      {/* Coach's plan */}
+                      <PlanCard plan={msg.plan} isGenerating={false} />
+
                       {/* Chart */}
                       <DynamicChart data={msg.chartData} config={msg.chartConfig} />
 

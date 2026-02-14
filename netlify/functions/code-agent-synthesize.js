@@ -42,7 +42,7 @@ export async function handler(event) {
 ${instruction}
 
 ## CHART
-${plan?.title || 'Activity Analysis'} (${plan?.chart_type || 'chart'}) — ${plan?.extraction_goal || ''}
+${plan?.title || 'Activity Analysis'} (${plan?.chart_type || 'chart'}) — ${plan?.intent || plan?.design || ''}
 
 ## COMPUTED METRICS
 ${JSON.stringify(metrics, null, 2)}`
