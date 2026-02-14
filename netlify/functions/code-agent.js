@@ -241,7 +241,8 @@ ${JSON.stringify(samplePoints.slice(0, 5), null, 2)}`
 
   const response = await anthropic.messages.create({
     model: OPUS_MODEL,
-    max_tokens: 2048,
+    max_tokens: 4096,
+    temperature: 0.9,
     system: [{ type: 'text', text: PLANNER_SYSTEM, cache_control: { type: 'ephemeral' } }],
     messages
   })
@@ -249,7 +250,7 @@ ${JSON.stringify(samplePoints.slice(0, 5), null, 2)}`
   const usage = response.usage || {}
   const elapsed = Date.now() - startTime
 
-  console.log(`[code-agent] PLAN: ${elapsed}ms, in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens || 0}`)
+  console.log(`[code-agent] PLAN (Opus): ${elapsed}ms, in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens || 0}`)
 
   const text = response.content
     .filter(b => b.type === 'text')
@@ -306,7 +307,8 @@ Implement the analysis plan above. Generate extraction_code, metrics_code, and c
 
   const response = await anthropic.messages.create({
     model: OPUS_MODEL,
-    max_tokens: 8192,
+    max_tokens: 16384,
+    temperature: 0.3,
     system: [{ type: 'text', text: CODEGEN_SYSTEM, cache_control: { type: 'ephemeral' } }],
     messages
   })
@@ -314,7 +316,7 @@ Implement the analysis plan above. Generate extraction_code, metrics_code, and c
   const usage = response.usage || {}
   const elapsed = Date.now() - startTime
 
-  console.log(`[code-agent] GENERATE: ${elapsed}ms, in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens || 0}`)
+  console.log(`[code-agent] GENERATE (Opus): ${elapsed}ms, in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens || 0}`)
 
   const text = response.content
     .filter(b => b.type === 'text')
