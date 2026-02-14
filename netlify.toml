@@ -24,7 +24,7 @@
   timeout = 60
 
 [functions."code-agent"]
-  timeout = 60
+  timeout = 90
 
 [functions."code-agent-synthesize"]
   timeout = 30

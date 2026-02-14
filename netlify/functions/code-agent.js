@@ -1,5 +1,11 @@
-// Lucy Code Agent — Activity File Analysis Pipeline
-// Single-call LLM: plans the visualization + generates code in one shot.
+// Lucy Code Agent — Two-Phase Activity Analysis Pipeline
+//
+// Phase 1 (PLAN):  Opus actively thinks about what analysis the athlete needs.
+//                  Returns a user-facing plan immediately so the frontend can
+//                  display it while Phase 2 runs.
+//
+// Phase 2 (GENERATE): Opus receives the plan + data context and produces
+//                     high-quality extraction/metrics code + chart config.
 //
 // File parsing happens CLIENT-SIDE (binary FIT files can't be sent as JSON).
 // The client sends a data summary + sample points. The LLM generates code
@@ -7,66 +13,148 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 
+const OPUS_MODEL  = 'claude-opus-4-6'
 const HAIKU_MODEL = 'claude-haiku-4-5-20251001'
 
 // ─────────────────────────────────────────────
-// SYSTEM PROMPT (single unified call)
+// PHASE 1: ACTIVE-THINKER PLANNER
 // ─────────────────────────────────────────────
 
-const AGENT_SYSTEM = `You are an elite cycling data analyst who writes JavaScript code for Recharts visualizations. You receive a user question + activity file data and produce analysis code in ONE step.
+const PLANNER_SYSTEM = `You are an elite cycling coach and performance analyst — Lucy's analytical brain. Your job is to ACTIVELY THINK about what analysis will give the athlete the deepest insight, going well beyond their literal question.
 
-## THINKING PROCESS (internal — inform your code, keep output brief)
+## ACTIVE THINKING FRAMEWORK
 
-1. INTENT: What does the user actually need? "Show me power" → smoothed power + HR overlay for decoupling context.
-2. COMPANION DATA: What else would a coach show? Power→add HR. Elevation→add speed/power. HR→add power for drift detection.
-3. CHART TYPE: Use "composed" for 2+ series with different scales. Never show raw power alone — always smooth (30s rolling avg).
-4. COLORS: Power=#2F71FF, HR=#FF3B2F, Cadence=#FF9500, Speed=#28CD56, Altitude=#8E8E93, Temp=#AF52DE.
+When you receive a question, think like a world-tour coach reviewing data with a rider:
 
-## CYCLING DOMAIN (apply correct definitions)
-- **NP**: 30s rolling avg → 4th power each → average → 4th root
-- **IF**: NP / FTP (estimate FTP as 75% of max power if unknown)
-- **TSS**: (seconds × NP × IF) / (FTP × 3600) × 100
-- **VI**: NP / Avg Power (>1.05 = variable)
-- **Decoupling**: Compare power:HR ratio first half vs second half (>5% = fatigue)
-- **Gradient**: rise/run smoothed over 50-100m minimum
-- **HR Zones** (5-zone): Z1<60%, Z2 60-70%, Z3 70-80%, Z4 80-90%, Z5 90-100% of max HR
+### 1. DECODE THE REAL QUESTION
+- "Show me power" → They want to understand power delivery, sustainability, and fatigue patterns
+- "Heart rate zones" → They want to know training intensity distribution and whether the ride hit the right zones
+- "How was my ride?" → They want a performance assessment relative to their capability
+- "Normalized power" → They want to understand ride intensity, so also give IF, TSS, VI — the full picture
+- "Cadence" → They want pedaling efficiency, so also show power-per-pedal-stroke and optimal range
+
+### 2. ALWAYS ADD COMPANION DATA (a coach never shows one metric in isolation)
+- Power → add HR (cardiac decoupling), Speed (efficiency), Cadence (technique)
+- Heart Rate → add Power (aerobic drift detection), Zone time distribution
+- Elevation → add Power (W/kg climbing proxy), Speed (descending technique), Gradient
+- Cadence → add Power (torque vs spin), Speed (gear selection efficiency)
+- Speed → add Power (aerodynamic efficiency), Elevation (terrain context)
+- NP/IF/TSS → always show alongside avg power, VI, and the power curve that explains WHY
+
+### 3. CHOOSE METRICS THAT TELL A STORY
+Don't just compute averages. Think about what reveals performance:
+- Efficiency: Variability Index, Efficiency Factor (NP/avg HR), Decoupling %
+- Load: NP, IF, TSS — the training-load trinity
+- Patterns: Zone time distribution, positive/negative power splits, fade analysis
+- Peaks: Best 5s, 1min, 5min, 20min power (critical power profile)
+- Context: Compare first-half vs second-half for fatigue detection
+
+### 4. PICK THE RIGHT VISUALIZATION
+- Time series with 2+ metrics → composed chart with dual Y-axes
+- Distribution / zones → horizontal bar chart
+- Correlation (power vs HR) → scatter plot
+- Elevation profile with overlays → composed with area + lines
+- Single metric over time → line with reference lines (thresholds)
+
+## FIELD KNOWLEDGE
+- power: Watts from power meter (0-2000W typical, >400W = sprint, 150-250W = endurance)
+- heart_rate: BPM (resting 40-60, endurance 120-150, threshold 160-180, max 180-210)
+- cadence: RPM (60-120 typical, 80-95 = self-selected optimal for most riders)
+- speed: m/s (convert: multiply by 3.6 for km/h. 8-12 m/s = 30-43 km/h typical road)
+- altitude: meters above sea level
+- distance_meters: cumulative distance from start
+- elapsed_seconds: seconds from ride start
+- temperature: degrees Celsius
+
+## CYCLING METRIC DEFINITIONS (use correct formulas)
+- **NP** (Normalized Power): 30s rolling avg → raise each to 4th power → mean → 4th root
+- **IF** (Intensity Factor): NP / FTP. Estimate FTP as 75% of peak 20min power, or 72% of max power if no long effort
+- **TSS** (Training Stress Score): (duration_seconds × NP × IF) / (FTP × 3600) × 100
+- **VI** (Variability Index): NP / avg_power. >1.05 = variable/surgy, <1.02 = very steady
+- **EF** (Efficiency Factor): NP / avg_HR. Higher = more aerobically fit
+- **Decoupling**: (first_half_power:HR ratio - second_half_power:HR ratio) / first_half_ratio × 100. >5% = aerobic fatigue
 - **Power Zones** (Coggan 7-zone): Z1<55%, Z2 55-75%, Z3 75-90%, Z4 90-105%, Z5 105-120%, Z6 120-150%, Z7>150% of FTP
-- Rolling avg windows: power=30s, HR=5-10s, speed=10-20s
+- **HR Zones** (5-zone): Z1<60%, Z2 60-70%, Z3 70-80%, Z4 80-90%, Z5 90-100% of max HR
+
+## OUTPUT FORMAT (JSON only, no markdown fences)
+{
+  "user_facing_plan": "2-4 sentences written TO the athlete explaining what you're going to analyze, what companion data you're adding, and WHY it matters for their training. Be specific — mention the actual fields and metrics by name. Sound like a knowledgeable coach, not a chatbot.",
+  "technical_plan": {
+    "intent": "decoded user intent in one sentence",
+    "chart_type": "composed|line|bar|area|scatter",
+    "title": "Descriptive Chart Title",
+    "primary_series": [{"field": "power", "transform": "30s_rolling_avg", "label": "Power (30s avg)"}],
+    "companion_series": [{"field": "heart_rate", "reason": "cardiac decoupling detection", "label": "Heart Rate"}],
+    "metrics": ["NP", "IF", "TSS", "VI", "Avg Power", "Max Power"],
+    "computations": "Brief description of any special calculations (NP formula, zone boundaries, split analysis, etc.)",
+    "design": "Layout notes: dual Y-axis (power left, HR right), 30s smoothing on power, time_label on X, brush enabled for >30min rides, reference line at estimated FTP"
+  }
+}`
+
+// ─────────────────────────────────────────────
+// PHASE 2: CODE GENERATOR
+// ─────────────────────────────────────────────
+
+const CODEGEN_SYSTEM = `You are an elite JavaScript developer generating Recharts visualization code for cycling data. You receive a detailed analysis plan created by a cycling coach and your job is to produce PERFECT code that implements it exactly.
+
+## STANDARD COLORS (always use these)
+Power=#2F71FF, HR=#FF3B2F, Cadence=#FF9500, Speed=#28CD56, Altitude=#8E8E93, Temp=#AF52DE, Gradient=#FF2D55
 
 ## CODE REQUIREMENTS
-- extraction_code: function body receiving \`data\` (array of points), returns flat objects for Recharts
+- extraction_code: function body receiving \`data\` (array of point objects), returns array of flat objects for Recharts
 - metrics_code: function body receiving \`data\`, returns [{label, value, unit}]
-- Runs in sandbox via \`new Function('data', code)\` — no imports, no DOM, pure JS
-- Use \`var\`/\`function\` (ES5) — no const/let/arrow/template literals/destructuring
-- Compute rolling averages on FULL data, THEN resample (limit ~500 points for display)
-- Guard nulls: \`(point.power || 0)\`
-- Add time_label field: "mm:ss" or "h:mm:ss" from elapsed_seconds
-- Brush enabled for >1000 points or >30min rides
+- Both run in sandbox via \`new Function('data', code)\` — no imports, no DOM access, pure JS
+- MUST use ES5 syntax: \`var\`, \`function\`, string concatenation — NO const/let/arrow/template literals/destructuring
+- Compute rolling averages on the FULL dataset first, THEN resample down to ~500 points for display
+- Always guard nulls: \`(point.power || 0)\`, \`(point.heart_rate || 0)\`
+- Always add time_label field: format elapsed_seconds as "mm:ss" or "h:mm:ss"
+- When computing NP: 30s rolling avg → 4th power each value → mean of 4th powers → 4th root of that mean
+- When computing zones: count time-in-zone (seconds or %), not just point counts
+- Brush enabled for rides >1000 points or >30min
 
-## OUTPUT FORMAT (JSON only, no markdown, no wrapping)
+## DUAL Y-AXIS RULES
+When the plan calls for dual axes (e.g., power + HR):
+- Power/Watts → yAxisId: "left", yLabel in Watts
+- HR/BPM → yAxisId: "right", yLabelRight in bpm
+- Each series MUST specify yAxisId: "left" or "right"
+
+## CHART CONFIG SPEC
 {
-  "plan": {
-    "reasoning": "1-2 sentences: what does the user need and why this chart design",
-    "intent_decoded": "brief: what the user actually needs",
-    "chart_type": "line|bar|area|scatter|composed",
-    "title": "Chart title",
-    "companion_series": ["field names added for context"],
-    "design_notes": "brief layout/formatting notes"
-  },
-  "extraction_code": "JS function body string",
-  "chart_config": {
-    "type": "line|bar|area|scatter|composed",
-    "title": "Chart Title",
-    "xKey": "field name",
-    "xLabel": "X Axis Label",
-    "yLabel": "Y Axis Label",
-    "yLabelRight": "optional right Y label",
-    "series": [{"key":"field","label":"Name","color":"#hex","type":"line","strokeWidth":2,"dot":false,"fillOpacity":0.3,"yAxisId":"left|right"}],
-    "tooltip": true, "legend": true, "grid": true, "brush": true,
-    "referenceLines": [{"y":250,"label":"FTP","color":"#ff0000","strokeDasharray":"5 5"}]
-  },
-  "metrics_code": "JS function body string returning [{label, value, unit}]"
+  "type": "composed|line|bar|area|scatter",
+  "title": "Chart Title",
+  "xKey": "time_label",
+  "xLabel": "Time",
+  "yLabel": "Left Y Label",
+  "yLabelRight": "Right Y Label (if dual axis)",
+  "series": [
+    {
+      "key": "field_name",
+      "label": "Display Name",
+      "color": "#hex",
+      "type": "line|bar|area|scatter",
+      "strokeWidth": 2,
+      "dot": false,
+      "fillOpacity": 0.15,
+      "yAxisId": "left|right"
+    }
+  ],
+  "tooltip": true,
+  "legend": true,
+  "grid": true,
+  "brush": true,
+  "referenceLines": [{"y": 250, "label": "FTP", "color": "#ff0000", "yAxisId": "left", "strokeDasharray": "5 5"}]
+}
+
+## OUTPUT FORMAT (JSON only, no markdown fences)
+{
+  "extraction_code": "function body string",
+  "chart_config": { ... },
+  "metrics_code": "function body string returning [{label, value, unit}]"
 }`
+
+// ─────────────────────────────────────────────
+// SYNTHESIZER
+// ─────────────────────────────────────────────
 
 const SYNTHESIZER_SYSTEM = `You are Lucy's Code Assistant — you help athletes understand their cycling activity data through visualizations and analysis.
 
@@ -83,27 +171,10 @@ You receive the results of a code execution pipeline that processed their activi
 8. If metrics show interesting patterns (high variability, zone distribution skew, etc.), call them out`
 
 // ─────────────────────────────────────────────
-// MAIN PIPELINE (single LLM call)
+// SHARED: Build ride context from data summary
 // ─────────────────────────────────────────────
 
-async function runCodeAgent(instruction, dataSummary, samplePoints, anthropic, history) {
-  const startTime = Date.now()
-  const stages = {}
-
-  // Build messages
-  const messages = []
-
-  // Include history for multi-turn context
-  if (history && history.length > 0) {
-    for (const msg of history.slice(-6)) {
-      messages.push({
-        role: msg.role === 'user' ? 'user' : 'assistant',
-        content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
-      })
-    }
-  }
-
-  // Detect ride characteristics
+function buildRideContext(dataSummary) {
   const rideContext = []
   if (!dataSummary.fields?.latitude && !dataSummary.fields?.longitude) {
     rideContext.push('INDOOR (no GPS)')
@@ -112,9 +183,12 @@ async function runCodeAgent(instruction, dataSummary, samplePoints, anthropic, h
     const altRange = dataSummary.fields.altitude.max - dataSummary.fields.altitude.min
     if (altRange < 20) rideContext.push('FLAT (<20m elevation)')
     else if (altRange > 500) rideContext.push('MOUNTAINOUS (>500m elevation)')
+    else rideContext.push(`ROLLING (~${Math.round(altRange)}m elevation range)`)
   }
   if (!dataSummary.fields?.power) rideContext.push('NO POWER METER')
   if (!dataSummary.fields?.heart_rate) rideContext.push('NO HR MONITOR')
+  if (!dataSummary.fields?.cadence) rideContext.push('NO CADENCE SENSOR')
+  if (dataSummary.fields?.temperature) rideContext.push('HAS TEMPERATURE')
 
   const fieldRanges = Object.entries(dataSummary.fields || {})
     .filter(([k]) => !['latitude', 'longitude'].includes(k))
@@ -124,12 +198,99 @@ async function runCodeAgent(instruction, dataSummary, samplePoints, anthropic, h
   const fieldsAvailable = Object.keys(dataSummary.fields || {})
     .filter(f => f !== 'latitude' && f !== 'longitude')
 
+  return { rideContext, fieldRanges, fieldsAvailable }
+}
+
+// ─────────────────────────────────────────────
+// PHASE 1: PLAN
+// ─────────────────────────────────────────────
+
+async function planAnalysis(instruction, dataSummary, samplePoints, anthropic, history) {
+  const startTime = Date.now()
+
+  const messages = []
+  if (history && history.length > 0) {
+    for (const msg of history.slice(-6)) {
+      messages.push({
+        role: msg.role === 'user' ? 'user' : 'assistant',
+        content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+      })
+    }
+  }
+
+  const { rideContext, fieldRanges, fieldsAvailable } = buildRideContext(dataSummary)
+
   messages.push({
     role: 'user',
-    content: `## INSTRUCTION
+    content: `## ATHLETE'S QUESTION
 ${instruction}
 
-## RIDE
+## RIDE CHARACTERISTICS
+${rideContext.length > 0 ? rideContext.join(', ') : 'Standard outdoor ride'}
+Points: ${dataSummary.point_count}, Duration: ${Math.round(dataSummary.duration_seconds / 60)}min, Distance: ${dataSummary.distance_km}km, Sample rate: ~${dataSummary.sample_rate}s
+
+## AVAILABLE DATA FIELDS
+${fieldsAvailable.join(', ')}
+
+## FIELD RANGES
+${fieldRanges}
+
+## SAMPLE POINTS (structure reference — first 5)
+${JSON.stringify(samplePoints.slice(0, 5), null, 2)}`
+  })
+
+  const response = await anthropic.messages.create({
+    model: OPUS_MODEL,
+    max_tokens: 2048,
+    system: [{ type: 'text', text: PLANNER_SYSTEM, cache_control: { type: 'ephemeral' } }],
+    messages
+  })
+
+  const usage = response.usage || {}
+  const elapsed = Date.now() - startTime
+
+  console.log(`[code-agent] PLAN: ${elapsed}ms, in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens || 0}`)
+
+  const text = response.content
+    .filter(b => b.type === 'text')
+    .map(b => b.text)
+    .join('')
+
+  const result = parseJSON(text)
+  if (!result || !result.technical_plan) {
+    throw new Error('Planner returned invalid output')
+  }
+
+  return {
+    plan: result,
+    timing: {
+      planner_ms: elapsed,
+      input_tokens: usage.input_tokens,
+      output_tokens: usage.output_tokens,
+      cache_read: usage.cache_read_input_tokens || 0,
+      cache_creation: usage.cache_creation_input_tokens || 0
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+// PHASE 2: GENERATE CODE
+// ─────────────────────────────────────────────
+
+async function generateCode(instruction, dataSummary, samplePoints, plan, anthropic) {
+  const startTime = Date.now()
+
+  const { rideContext, fieldRanges, fieldsAvailable } = buildRideContext(dataSummary)
+
+  const messages = [{
+    role: 'user',
+    content: `## ANALYSIS PLAN (from coach/planner)
+${JSON.stringify(plan.technical_plan, null, 2)}
+
+## ORIGINAL QUESTION
+${instruction}
+
+## RIDE DATA
 ${rideContext.length > 0 ? rideContext.join(', ') : 'Standard outdoor ride'}
 Points: ${dataSummary.point_count}, Duration: ${Math.round(dataSummary.duration_seconds / 60)}min, Distance: ${dataSummary.distance_km}km, Sample rate: ~${dataSummary.sample_rate}s
 Fields: ${fieldsAvailable.join(', ')}
@@ -138,106 +299,49 @@ Fields: ${fieldsAvailable.join(', ')}
 ${fieldRanges}
 
 ## SAMPLE POINTS (structure reference)
-${JSON.stringify(samplePoints.slice(0, 5), null, 2)}`
+${JSON.stringify(samplePoints.slice(0, 5), null, 2)}
+
+Implement the analysis plan above. Generate extraction_code, metrics_code, and chart_config.`
+  }]
+
+  const response = await anthropic.messages.create({
+    model: OPUS_MODEL,
+    max_tokens: 8192,
+    system: [{ type: 'text', text: CODEGEN_SYSTEM, cache_control: { type: 'ephemeral' } }],
+    messages
   })
 
-  let result
-  try {
-    const response = await anthropic.messages.create({
-      model: HAIKU_MODEL,
-      max_tokens: 8192,
-      system: [{ type: 'text', text: AGENT_SYSTEM, cache_control: { type: 'ephemeral' } }],
-      messages
-    })
+  const usage = response.usage || {}
+  const elapsed = Date.now() - startTime
 
-    const usage = response.usage || {}
-    const elapsed = Date.now() - startTime
+  console.log(`[code-agent] GENERATE: ${elapsed}ms, in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens || 0}`)
 
-    stages.planner = {
-      ms: elapsed,
-      input_tokens: usage.input_tokens,
-      output_tokens: usage.output_tokens,
-      cache_read: usage.cache_read_input_tokens || 0,
-      cache_creation: usage.cache_creation_input_tokens || 0
-    }
+  const text = response.content
+    .filter(b => b.type === 'text')
+    .map(b => b.text)
+    .join('')
 
-    console.log(`[code-agent] LLM call: ${elapsed}ms, in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens || 0}`)
-
-    const text = response.content
-      .filter(b => b.type === 'text')
-      .map(b => b.text)
-      .join('')
-
-    result = parseJSON(text)
-    if (!result || !result.extraction_code) {
-      throw new Error('LLM returned invalid output')
-    }
-
-    // Populate planner stage info from plan sub-object for frontend display
-    const plan = result.plan || {}
-    stages.planner.reasoning = plan.reasoning
-    stages.planner.intent_decoded = plan.intent_decoded
-    stages.planner.chart_type = plan.chart_type || result.chart_config?.type
-    stages.planner.title = plan.title || result.chart_config?.title
-    stages.planner.companion_series = plan.companion_series
-    stages.planner.design_notes = plan.design_notes
-
-  } catch (err) {
-    console.error('[code-agent] LLM error:', err.message)
-    return {
-      error: 'Failed to generate analysis code. Please try rephrasing your request.',
-      stages,
-      timing: { total_ms: Date.now() - startTime }
-    }
+  const result = parseJSON(text)
+  if (!result || !result.extraction_code) {
+    throw new Error('Code generator returned invalid output')
   }
 
   return {
     extraction_code: result.extraction_code,
     metrics_code: result.metrics_code || 'return []',
     chart_config: result.chart_config,
-    plan: result.plan || {},
-    stages,
     timing: {
-      total_ms: Date.now() - startTime
+      codegen_ms: elapsed,
+      input_tokens: usage.input_tokens,
+      output_tokens: usage.output_tokens,
+      cache_read: usage.cache_read_input_tokens || 0,
+      cache_creation: usage.cache_creation_input_tokens || 0
     }
   }
 }
 
 // ─────────────────────────────────────────────
-// SYNTHESIZE — brief interpretation of results
-// ─────────────────────────────────────────────
-
-async function synthesizeInsight(instruction, metrics, plan, anthropic) {
-  try {
-    const response = await anthropic.messages.create({
-      model: HAIKU_MODEL,
-      max_tokens: 500,
-      system: [{ type: 'text', text: SYNTHESIZER_SYSTEM, cache_control: { type: 'ephemeral' } }],
-      messages: [{
-        role: 'user',
-        content: `## USER ASKED
-${instruction}
-
-## CHART
-${plan.title || 'Chart'} (${plan.chart_type || 'composed'} chart)${plan.design_notes ? ' — ' + plan.design_notes : ''}
-
-## COMPUTED METRICS
-${JSON.stringify(metrics, null, 2)}`
-      }]
-    })
-
-    return response.content
-      .filter(b => b.type === 'text')
-      .map(b => b.text)
-      .join('')
-  } catch (err) {
-    console.error('[code-agent] Synthesizer error:', err.message)
-    return null
-  }
-}
-
-// ─────────────────────────────────────────────
-// CONVERSATIONAL — handles messages without file data
+// CONVERSATIONAL (no file data — stays on Haiku)
 // ─────────────────────────────────────────────
 
 async function handleConversation(message, history, anthropic) {
@@ -306,7 +410,7 @@ export async function handler(event) {
 
   try {
     const body = JSON.parse(event.body)
-    const { message, dataSummary, samplePoints, history = [], mode = 'analyze' } = body
+    const { message, dataSummary, samplePoints, history = [], mode = 'analyze', phase, plan } = body
 
     if (!message) {
       return { statusCode: 400, body: JSON.stringify({ error: 'Message is required' }) }
@@ -319,7 +423,7 @@ export async function handler(event) {
 
     const anthropic = new Anthropic({ apiKey })
 
-    // If no file data, handle as conversation
+    // ─── CHAT (no file data) ──────────────────
     if (!dataSummary || mode === 'chat') {
       const response = await handleConversation(message, history, anthropic)
       return {
@@ -333,46 +437,102 @@ export async function handler(event) {
       }
     }
 
-    // Full pipeline: Plan → Generate
-    const result = await runCodeAgent(message, dataSummary, samplePoints || [], anthropic, history)
+    // ─── PHASE 1: PLAN ────────────────────────
+    if (phase === 'plan') {
+      try {
+        const result = await planAnalysis(message, dataSummary, samplePoints || [], anthropic, history)
+        return {
+          statusCode: 200,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'plan',
+            plan: result.plan,
+            timing: result.timing,
+            timestamp: new Date().toISOString()
+          })
+        }
+      } catch (err) {
+        console.error('[code-agent] Plan error:', err.message)
+        return {
+          statusCode: 200,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'error',
+            response: 'Failed to plan the analysis. Please try rephrasing your request.',
+            timestamp: new Date().toISOString()
+          })
+        }
+      }
+    }
 
-    if (result.error) {
+    // ─── PHASE 2: GENERATE ────────────────────
+    if (phase === 'generate') {
+      if (!plan) {
+        return { statusCode: 400, body: JSON.stringify({ error: 'Plan is required for generate phase' }) }
+      }
+
+      try {
+        const result = await generateCode(message, dataSummary, samplePoints || [], plan, anthropic)
+        return {
+          statusCode: 200,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'visualization',
+            extraction_code: result.extraction_code,
+            metrics_code: result.metrics_code,
+            chart_config: result.chart_config,
+            timing: result.timing,
+            timestamp: new Date().toISOString()
+          })
+        }
+      } catch (err) {
+        console.error('[code-agent] Generate error:', err.message)
+        return {
+          statusCode: 200,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'error',
+            response: 'Failed to generate analysis code. Please try rephrasing your request.',
+            timestamp: new Date().toISOString()
+          })
+        }
+      }
+    }
+
+    // ─── LEGACY: single-call mode (no phase specified) ─────
+    // Run both phases sequentially for backward compat
+    try {
+      const planResult = await planAnalysis(message, dataSummary, samplePoints || [], anthropic, history)
+      const codeResult = await generateCode(message, dataSummary, samplePoints || [], planResult.plan, anthropic)
+
+      return {
+        statusCode: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'visualization',
+          extraction_code: codeResult.extraction_code,
+          metrics_code: codeResult.metrics_code,
+          chart_config: codeResult.chart_config,
+          plan: planResult.plan,
+          timing: {
+            planner_ms: planResult.timing.planner_ms,
+            codegen_ms: codeResult.timing.codegen_ms,
+            total_ms: planResult.timing.planner_ms + codeResult.timing.codegen_ms
+          },
+          timestamp: new Date().toISOString()
+        })
+      }
+    } catch (err) {
+      console.error('[code-agent] Pipeline error:', err.message)
       return {
         statusCode: 200,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: 'error',
-          response: result.error,
-          pipeline: result.stages,
-          timing: result.timing,
+          response: 'Failed to generate analysis. Please try rephrasing your request.',
           timestamp: new Date().toISOString()
         })
       }
-    }
-
-    // Synthesize a brief insight about the results
-    // (client will call this after executing the code and getting metrics)
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        type: 'visualization',
-        extraction_code: result.extraction_code,
-        metrics_code: result.metrics_code,
-        chart_config: result.chart_config,
-        plan: {
-          reasoning: result.plan.reasoning,
-          intent_decoded: result.plan.intent_decoded,
-          chart_type: result.plan.chart_type,
-          title: result.plan.title,
-          extraction_goal: result.plan.extraction_goal,
-          companion_series: result.plan.companion_series,
-          design_notes: result.plan.design_notes
-        },
-        pipeline: result.stages,
-        timing: result.timing,
-        timestamp: new Date().toISOString()
-      })
     }
 
   } catch (error) {
@@ -389,35 +549,5 @@ export async function handler(event) {
       statusCode: 500,
       body: JSON.stringify({ error: 'An error occurred processing your request.' })
     }
-  }
-}
-
-// ─────────────────────────────────────────────
-// SYNTHESIS ENDPOINT (called after client-side execution)
-// ─────────────────────────────────────────────
-
-export async function synthesize(event) {
-  if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: JSON.stringify({ error: 'Method not allowed' }) }
-  }
-
-  try {
-    const { instruction, metrics, plan } = JSON.parse(event.body)
-    const apiKey = process.env.ANTHROPIC_API_KEY
-    if (!apiKey) {
-      return { statusCode: 500, body: JSON.stringify({ error: 'AI service not configured' }) }
-    }
-
-    const anthropic = new Anthropic({ apiKey })
-    const insight = await synthesizeInsight(instruction, metrics, plan, anthropic)
-
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ insight })
-    }
-  } catch (error) {
-    console.error('[code-agent] Synthesize error:', error)
-    return { statusCode: 500, body: JSON.stringify({ error: 'Synthesis failed' }) }
   }
 }
