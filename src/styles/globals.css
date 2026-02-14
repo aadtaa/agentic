@@ -134,6 +134,11 @@ body {
   animation: dots 1.5s infinite;
 }
 
+@keyframes cursorBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
 /* Button Reset */
 button {
   font-family: inherit;

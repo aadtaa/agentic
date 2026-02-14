@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react'
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
@@ -464,11 +464,45 @@ const MetricsDisplay = ({ metrics }) => {
 // PLAN CARD — shown to user while code generates
 // ─────────────────────────────────────────────
 
+// Typewriter hook — reveals text word-by-word at reading pace
+const useTypewriter = (text, wordsPerSecond = 18) => {
+  const words = useMemo(() => (text || '').split(/(\s+)/), [text])
+  const [visibleCount, setVisibleCount] = useState(0)
+  const [done, setDone] = useState(false)
+  const prevTextRef = useRef(text)
+
+  useEffect(() => {
+    // If the text changed, reset
+    if (text !== prevTextRef.current) {
+      setVisibleCount(0)
+      setDone(false)
+      prevTextRef.current = text
+    }
+  }, [text])
+
+  useEffect(() => {
+    if (!text || visibleCount >= words.length) {
+      setDone(true)
+      return
+    }
+    // ~18 words/sec → one word-chunk every ~55ms (feels like fast streaming)
+    const interval = 1000 / wordsPerSecond
+    const timer = setTimeout(() => {
+      setVisibleCount(c => Math.min(c + 1, words.length))
+    }, interval)
+    return () => clearTimeout(timer)
+  }, [text, words, visibleCount, wordsPerSecond])
+
+  const displayed = words.slice(0, visibleCount).join('')
+  return { displayed, done }
+}
+
 const PlanCard = ({ plan, isGenerating }) => {
   if (!plan) return null
 
   const userPlan = plan.user_facing_plan || ''
   const tech = plan.technical_plan || {}
+  const { displayed, done: typewriterDone } = useTypewriter(userPlan, 18)
 
   return (
     <div style={{
@@ -478,64 +512,82 @@ const PlanCard = ({ plan, isGenerating }) => {
       marginBottom: '12px',
       borderLeft: '3px solid var(--accent-primary, #2F71FF)',
     }}>
-      {/* Coach's plan text */}
+      {/* Coach's plan text — streams in word-by-word */}
       <div style={{
         fontSize: '14px',
         lineHeight: 1.7,
         color: 'var(--text-primary)',
       }}>
-        {userPlan}
+        {displayed}
+        {!typewriterDone && (
+          <span style={{
+            display: 'inline-block',
+            width: '2px',
+            height: '1em',
+            backgroundColor: 'var(--accent-primary, #2F71FF)',
+            marginLeft: '2px',
+            verticalAlign: 'text-bottom',
+            animation: 'cursorBlink 0.8s step-end infinite',
+          }} />
+        )}
       </div>
 
-      {/* Companion data tags */}
-      {tech.companion_series && tech.companion_series.length > 0 && (
-        <div style={{
-          display: 'flex',
-          gap: '6px',
-          flexWrap: 'wrap',
-          marginTop: '10px',
-        }}>
-          {tech.companion_series.map((s, i) => (
-            <span key={i} style={{
-              fontSize: '11px',
-              padding: '3px 10px',
-              backgroundColor: 'var(--grey-100, #f0f0f2)',
-              borderRadius: '8px',
-              color: 'var(--text-secondary)',
-            }}>
-              + {typeof s === 'string' ? s : (s.label || s.field)}
-              {s.reason && (
-                <span style={{ color: 'var(--text-tertiary)', marginLeft: '4px' }}>
-                  ({s.reason})
-                </span>
-              )}
-            </span>
-          ))}
-        </div>
-      )}
+      {/* Tags fade in after typewriter finishes */}
+      <div style={{
+        opacity: typewriterDone ? 1 : 0,
+        transition: 'opacity 0.4s ease',
+        pointerEvents: typewriterDone ? 'auto' : 'none',
+      }}>
+        {/* Companion data tags */}
+        {tech.companion_series && tech.companion_series.length > 0 && (
+          <div style={{
+            display: 'flex',
+            gap: '6px',
+            flexWrap: 'wrap',
+            marginTop: '10px',
+          }}>
+            {tech.companion_series.map((s, i) => (
+              <span key={i} style={{
+                fontSize: '11px',
+                padding: '3px 10px',
+                backgroundColor: 'var(--grey-100, #f0f0f2)',
+                borderRadius: '8px',
+                color: 'var(--text-secondary)',
+              }}>
+                + {typeof s === 'string' ? s : (s.label || s.field)}
+                {s.reason && (
+                  <span style={{ color: 'var(--text-tertiary)', marginLeft: '4px' }}>
+                    ({s.reason})
+                  </span>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
 
-      {/* Metrics that will be computed */}
-      {tech.metrics && tech.metrics.length > 0 && (
-        <div style={{
-          display: 'flex',
-          gap: '6px',
-          flexWrap: 'wrap',
-          marginTop: '8px',
-        }}>
-          {tech.metrics.map((m, i) => (
-            <span key={i} style={{
-              fontSize: '11px',
-              padding: '3px 10px',
-              backgroundColor: 'rgba(47, 113, 255, 0.08)',
-              borderRadius: '8px',
-              color: 'var(--accent-primary, #2F71FF)',
-              fontWeight: 500,
-            }}>
-              {m}
-            </span>
-          ))}
-        </div>
-      )}
+        {/* Metrics that will be computed */}
+        {tech.metrics && tech.metrics.length > 0 && (
+          <div style={{
+            display: 'flex',
+            gap: '6px',
+            flexWrap: 'wrap',
+            marginTop: '8px',
+          }}>
+            {tech.metrics.map((m, i) => (
+              <span key={i} style={{
+                fontSize: '11px',
+                padding: '3px 10px',
+                backgroundColor: 'rgba(47, 113, 255, 0.08)',
+                borderRadius: '8px',
+                color: 'var(--accent-primary, #2F71FF)',
+                fontWeight: 500,
+              }}>
+                {m}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Generating indicator */}
       {isGenerating && (
