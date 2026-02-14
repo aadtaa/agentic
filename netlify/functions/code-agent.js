@@ -263,7 +263,7 @@ async function runCodeAgent(instruction, dataSummary, samplePoints, anthropic, h
   // ─── STAGE 1: PLANNER ────────────────────────────────
   const plannerStart = Date.now()
 
-  let plan
+  let plan, plannerResponse
   try {
     const plannerMessages = []
 
@@ -279,10 +279,6 @@ async function runCodeAgent(instruction, dataSummary, samplePoints, anthropic, h
 
     // Build a richer context for the planner
     const fieldsAvailable = Object.keys(dataSummary.fields || {})
-    const fieldDetails = Object.entries(dataSummary.fields || {}).map(([k, v]) =>
-      `  ${k}: min=${v.min}, max=${v.max}, avg=${v.avg}, count=${v.count}`
-    ).join('\n')
-
     // Detect ride characteristics for the planner
     const rideContext = []
     if (!dataSummary.fields?.latitude && !dataSummary.fields?.longitude) {
@@ -303,6 +299,13 @@ async function runCodeAgent(instruction, dataSummary, samplePoints, anthropic, h
       rideContext.push('LONG RIDE (>3 hours)')
     }
 
+    // Planner only needs field names + ranges to pick chart type & transformations.
+    // Actual data points are only used in Stage 2 sandbox execution.
+    const plannerFieldDetails = Object.entries(dataSummary.fields || {})
+      .filter(([k]) => !['latitude', 'longitude'].includes(k))
+      .map(([k, v]) => `  ${k}: min=${v.min}, max=${v.max}, avg=${v.avg}`)
+      .join('\n')
+
     plannerMessages.push({
       role: 'user',
       content: `## USER INSTRUCTION
@@ -312,23 +315,17 @@ ${instruction}
 ${rideContext.length > 0 ? rideContext.join('\n') : 'Standard outdoor ride with typical sensors'}
 
 ## DATA SUMMARY
-Points: ${dataSummary.point_count}
-Duration: ${dataSummary.duration_seconds}s (${Math.round(dataSummary.duration_seconds / 60)} minutes)
-Distance: ${dataSummary.distance_km} km
-Sample rate: ~${dataSummary.sample_rate}s per point
-Fields available: ${fieldsAvailable.join(', ')}
+Points: ${dataSummary.point_count}, Duration: ${Math.round(dataSummary.duration_seconds / 60)}min, Distance: ${dataSummary.distance_km}km
+Fields: ${fieldsAvailable.filter(f => f !== 'latitude' && f !== 'longitude').join(', ')}
 
 ## FIELD RANGES
-${fieldDetails}
-
-## SAMPLE POINTS (first 10, evenly spaced)
-${JSON.stringify(samplePoints.slice(0, 10), null, 2)}`
+${plannerFieldDetails}`
     })
 
-    const plannerResponse = await anthropic.messages.create({
+    plannerResponse = await anthropic.messages.create({
       model: HAIKU_MODEL,
-      max_tokens: 3000,
-      system: PLANNER_SYSTEM,
+      max_tokens: 1500,
+      system: [{ type: 'text', text: PLANNER_SYSTEM, cache_control: { type: 'ephemeral' } }],
       messages: plannerMessages
     })
 
@@ -357,8 +354,13 @@ ${JSON.stringify(samplePoints.slice(0, 10), null, 2)}`
     }
   }
 
+  const plannerUsage = plannerResponse?.usage || {}
   stages.planner = {
     ms: Date.now() - plannerStart,
+    input_tokens: plannerUsage.input_tokens,
+    output_tokens: plannerUsage.output_tokens,
+    cache_read: plannerUsage.cache_read_input_tokens || 0,
+    cache_creation: plannerUsage.cache_creation_input_tokens || 0,
     reasoning: plan.reasoning,
     intent_decoded: plan.intent_decoded,
     chart_type: plan.chart_type,
@@ -367,17 +369,17 @@ ${JSON.stringify(samplePoints.slice(0, 10), null, 2)}`
     design_notes: plan.design_notes
   }
 
-  console.log(`[code-agent] Stage 1 Planner: ${stages.planner.ms}ms, chart_type=${plan.chart_type}`)
+  console.log(`[code-agent] Stage 1 Planner: ${stages.planner.ms}ms, in=${plannerUsage.input_tokens} out=${plannerUsage.output_tokens} cache_read=${plannerUsage.cache_read_input_tokens || 0}, chart_type=${plan.chart_type}`)
 
   // ─── STAGE 2: CODE GENERATOR ─────────────────────────
   const codeGenStart = Date.now()
 
-  let codeOutput
+  let codeOutput, codeGenResponse
   try {
-    const codeGenResponse = await anthropic.messages.create({
+    codeGenResponse = await anthropic.messages.create({
       model: HAIKU_MODEL,
       max_tokens: 8192,
-      system: CODE_GEN_SYSTEM,
+      system: [{ type: 'text', text: CODE_GEN_SYSTEM, cache_control: { type: 'ephemeral' } }],
       messages: [{
         role: 'user',
         content: `## PLAN FROM ANALYST
@@ -419,14 +421,19 @@ IMPORTANT: Follow the plan's transformations EXACTLY. The analyst specified prec
     }
   }
 
+  const codeGenUsage = codeGenResponse?.usage || {}
   stages.code_gen = {
     ms: Date.now() - codeGenStart,
+    input_tokens: codeGenUsage.input_tokens,
+    output_tokens: codeGenUsage.output_tokens,
+    cache_read: codeGenUsage.cache_read_input_tokens || 0,
+    cache_creation: codeGenUsage.cache_creation_input_tokens || 0,
     has_extraction: !!codeOutput.extraction_code,
     has_metrics: !!codeOutput.metrics_code,
     series_count: (codeOutput.chart_config?.series || []).length
   }
 
-  console.log(`[code-agent] Stage 2 Code Gen: ${stages.code_gen.ms}ms, ${stages.code_gen.series_count} series`)
+  console.log(`[code-agent] Stage 2 Code Gen: ${stages.code_gen.ms}ms, in=${codeGenUsage.input_tokens} out=${codeGenUsage.output_tokens} cache_read=${codeGenUsage.cache_read_input_tokens || 0}, ${stages.code_gen.series_count} series`)
 
   // ─── RESULT PACKAGE ──────────────────────────────────
   const totalMs = Date.now() - startTime
@@ -454,7 +461,7 @@ async function synthesizeInsight(instruction, metrics, plan, anthropic) {
     const response = await anthropic.messages.create({
       model: HAIKU_MODEL,
       max_tokens: 500,
-      system: SYNTHESIZER_SYSTEM,
+      system: [{ type: 'text', text: SYNTHESIZER_SYSTEM, cache_control: { type: 'ephemeral' } }],
       messages: [{
         role: 'user',
         content: `## USER ASKED
