@@ -653,6 +653,7 @@ const CodeAgentTwo = () => {
     return samples
   }, [fileData])
 
+  // Non-streaming call for chat mode
   const callAgent = async (body) => {
     const response = await fetch('/.netlify/functions/code-agent-v2', {
       method: 'POST',
@@ -671,6 +672,23 @@ const CodeAgentTwo = () => {
       return { type: 'error', response: data.error || 'Sorry, I encountered an error.' }
     }
     return data
+  }
+
+  // Parse SSE events from a chunked text buffer
+  const parseSSEEvents = (buffer) => {
+    const events = []
+    const parts = buffer.split('\n\n')
+    const remainder = parts.pop() // incomplete chunk stays in buffer
+    for (const part of parts) {
+      const line = part.trim()
+      if (!line.startsWith('data: ')) continue
+      const payload = line.slice(6)
+      if (payload === '[DONE]') continue
+      try {
+        events.push(JSON.parse(payload))
+      } catch (_) { /* skip malformed */ }
+    }
+    return { events, remainder }
   }
 
   const sendMessage = async (messageText) => {
@@ -693,17 +711,87 @@ const CodeAgentTwo = () => {
         return
       }
 
-      // ─── SINGLE-CALL ANALYSIS ────────────────────
+      // ─── STREAMING ANALYSIS ────────────────────
       const samples = buildSamples()
-      const data = await callAgent({
-        message: messageText,
-        history,
-        dataSummary: fileData.summary,
-        samplePoints: samples
+      const response = await fetch('/.netlify/functions/code-agent-v2', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: messageText,
+          history,
+          dataSummary: fileData.summary,
+          samplePoints: samples
+        })
       })
 
-      if (data.type === 'error') {
-        setMessages(prev => [...prev, { role: 'assistant', content: data.response }])
+      const contentType = response.headers.get('content-type') || ''
+
+      // Fallback: if server returned JSON instead of SSE (error cases)
+      if (contentType.includes('application/json')) {
+        const data = await response.json()
+        if (data.error) {
+          setMessages(prev => [...prev, { role: 'assistant', content: data.error }])
+        }
+        return
+      }
+
+      // Create plan message immediately — it'll fill in as text streams
+      const planMsgKey = Date.now()
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        type: 'plan',
+        planText: '',
+        _key: planMsgKey,
+        isGenerating: true,
+      }])
+      setLoadingStage('')  // plan is visible, no need for loading text
+
+      // Read SSE stream
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let sseBuffer = ''
+      let resultData = null
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        sseBuffer += decoder.decode(value, { stream: true })
+        const { events, remainder } = parseSSEEvents(sseBuffer)
+        sseBuffer = remainder
+
+        for (const evt of events) {
+          if (evt.type === 'plan_delta') {
+            // Append plan text — renders immediately
+            setMessages(prev => prev.map(m =>
+              m._key === planMsgKey
+                ? { ...m, planText: m.planText + evt.text }
+                : m
+            ))
+          } else if (evt.type === 'plan_done') {
+            setLoadingStage('Generating code...')
+          } else if (evt.type === 'result') {
+            resultData = evt.data
+          } else if (evt.type === 'error') {
+            setMessages(prev => prev.map(m =>
+              m._key === planMsgKey
+                ? { ...m, isGenerating: false }
+                : m
+            ))
+            setMessages(prev => [...prev, { role: 'assistant', content: evt.message }])
+            return
+          }
+        }
+      }
+
+      if (!resultData) {
+        setMessages(prev => prev.map(m =>
+          m._key === planMsgKey ? { ...m, isGenerating: false } : m
+        ))
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: 'Stream ended without a result. Please try again.'
+        }])
         return
       }
 
@@ -711,8 +799,11 @@ const CodeAgentTwo = () => {
       setLoadingStage('Executing analysis...')
       const execStart = Date.now()
 
-      const extractionResult = executeSandbox(data.extraction_code, fileData.points)
+      const extractionResult = executeSandbox(resultData.extraction_code, fileData.points)
       if (!extractionResult.success) {
+        setMessages(prev => prev.map(m =>
+          m._key === planMsgKey ? { ...m, isGenerating: false } : m
+        ))
         setMessages(prev => [...prev, {
           role: 'assistant',
           content: `Code execution failed: ${extractionResult.error}. Let me try a different approach.`
@@ -720,25 +811,29 @@ const CodeAgentTwo = () => {
         return
       }
 
-      const metricsResult = executeSandbox(data.metrics_code, fileData.points)
+      const metricsResult = executeSandbox(resultData.metrics_code, fileData.points)
       const metrics = metricsResult.success ? metricsResult.data : []
       const executionMs = Date.now() - execStart
 
-      // Build the visualization message — everything from one call
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        type: 'visualization',
-        plan: data.plan,
-        chartData: extractionResult.data,
-        chartConfig: data.chart_config,
-        metrics,
-        insight: data.insight,
-        timing: {
-          sonnet_ms: data.timing?.sonnet_ms,
-          execution_ms: executionMs,
-          total_ms: (data.timing?.sonnet_ms || 0) + executionMs
-        }
-      }])
+      // Upgrade plan message → full visualization
+      setMessages(prev => prev.map(m =>
+        m._key === planMsgKey
+          ? {
+              ...m,
+              type: 'visualization',
+              isGenerating: false,
+              chartData: extractionResult.data,
+              chartConfig: resultData.chart_config,
+              metrics,
+              insight: resultData.insight,
+              timing: {
+                sonnet_ms: resultData.timing?.sonnet_ms,
+                execution_ms: executionMs,
+                total_ms: (resultData.timing?.sonnet_ms || 0) + executionMs
+              }
+            }
+          : m
+      ))
 
     } catch (error) {
       console.error('Code agent v2 error:', error)
@@ -821,10 +916,43 @@ const CodeAgentTwo = () => {
                         {msg.content}
                       </div>
                     </div>
+                  ) : msg.type === 'plan' ? (
+                    /* Streaming plan — text appears as Sonnet generates */
+                    <div style={{ marginBottom: '24px' }}>
+                      <div style={{
+                        backgroundColor: 'var(--grey-50, #f8f8fa)',
+                        borderRadius: '12px', padding: '16px 20px',
+                        borderLeft: '3px solid #28CD56',
+                      }}>
+                        <div style={{
+                          fontSize: '14px', lineHeight: 1.7, color: 'var(--text-primary)',
+                        }}>
+                          {msg.planText}
+                          {msg.isGenerating && (
+                            <span style={{
+                              display: 'inline-block',
+                              width: '6px', height: '16px',
+                              backgroundColor: '#28CD56',
+                              marginLeft: '2px',
+                              verticalAlign: 'text-bottom',
+                              animation: 'cursorBlink 0.8s ease-in-out infinite',
+                            }} />
+                          )}
+                        </div>
+                      </div>
+                      {msg.isGenerating && loadingStage && (
+                        <p style={{
+                          fontSize: '13px', color: 'var(--text-tertiary)',
+                          margin: '8px 0 0 0',
+                        }}>
+                          <span className="typing-dots">{loadingStage}</span>
+                        </p>
+                      )}
+                    </div>
                   ) : msg.type === 'visualization' ? (
                     <div style={{ marginBottom: '24px' }}>
-                      {/* Coach's plan */}
-                      {msg.plan && (
+                      {/* Coach's plan (preserved from streaming phase) */}
+                      {msg.planText && (
                         <div style={{
                           backgroundColor: 'var(--grey-50, #f8f8fa)',
                           borderRadius: '12px', padding: '16px 20px',
@@ -834,7 +962,7 @@ const CodeAgentTwo = () => {
                           <div style={{
                             fontSize: '14px', lineHeight: 1.7, color: 'var(--text-primary)',
                           }}>
-                            {msg.plan}
+                            {msg.planText}
                           </div>
                         </div>
                       )}
@@ -868,13 +996,13 @@ const CodeAgentTwo = () => {
                   )}
                 </div>
               ))}
-              {isLoading && (
+              {isLoading && loadingStage && (
                 <div style={{ marginBottom: '24px' }}>
                   <p style={{
                     fontSize: '15px', color: 'var(--text-tertiary)',
                     lineHeight: 1.7, margin: 0,
                   }}>
-                    <span className="typing-dots">{loadingStage || 'Analyzing'}</span>
+                    <span className="typing-dots">{loadingStage}</span>
                   </p>
                 </div>
               )}

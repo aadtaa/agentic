@@ -1,58 +1,47 @@
-// Code Agent V2 — Single-Call Activity Analysis Pipeline
+// Code Agent V2 — Streaming Single-Call Pipeline
 //
-// Everything in ONE Sonnet call: plan + extraction_code + metrics_code +
-// chart_config + insight text.  Client parses file, sends summary + samples,
-// gets back all artefacts, executes code locally, renders chart.
+// ONE Sonnet call produces plan + code + chart + insight.
+// The plan streams to the frontend in real-time via SSE while
+// the code/chart JSON is still generating.
 //
-// No multi-phase orchestration.  Fast, cheap, simple.
+// Output format:  <plan>coach text</plan> then JSON blob
+// SSE events:     plan_delta → plan_done → result
 
 import Anthropic from '@anthropic-ai/sdk'
 
 const SONNET_MODEL = 'claude-sonnet-4-5-20250929'
 
 // ─────────────────────────────────────────────
-// COMBINED SYSTEM PROMPT — plan + code in one shot
+// SYSTEM PROMPT — plan text first, then JSON
 // ─────────────────────────────────────────────
 
 const SYSTEM = `You are an elite cycling coach AND JavaScript developer.  You receive an athlete's question plus a data summary of their activity file (FIT/TCX/GPX parsed client-side).
 
-You MUST return a single JSON object (no markdown fences, no commentary outside the JSON) with ALL of the following keys:
+## OUTPUT FORMAT
 
+Your response MUST follow this exact structure — plan text inside <plan> tags, then a JSON object:
+
+<plan>
+Write 3-6 conversational sentences TO the athlete as if you're sitting next to them at a cafe reviewing their ride. Flow naturally — no bullet points, no bold markers. Mention specific fields and metrics by name, weave them into the narrative. Example tone: "I'll start by plotting your power with a 30-second rolling average so we can see past the spikes to your real effort trend. Since a coach never looks at power alone, I'm layering in your heart rate to check for cardiac drift..."
+</plan>
 {
-  "plan": "3-6 conversational sentences TO the athlete explaining what you'll analyse and why. Write as if you're sitting next to them at a cafe reviewing their ride. Mention specific fields, companion data, and metrics you'll compute. Natural, specific, coach-like.",
-
-  "extraction_code": "JavaScript function body. Receives \`data\` (array of point objects). Returns an array of flat objects for Recharts. Compute rolling averages on the FULL dataset first, THEN resample to ~500 display points. Always add a time_label field (mm:ss or h:mm:ss). Guard nulls with (p.field || 0).",
-
-  "metrics_code": "JavaScript function body. Receives \`data\`. Returns [{label, value, unit}] array of key performance metrics.",
-
+  "extraction_code": "JavaScript function body. Receives \`data\` (array of point objects). Returns an array of flat objects for Recharts.",
+  "metrics_code": "JavaScript function body. Receives \`data\`. Returns [{label, value, unit}].",
   "chart_config": {
     "type": "composed|line|bar|area|scatter",
-    "title": "Descriptive Chart Title",
+    "title": "Chart Title",
     "xKey": "time_label",
     "xLabel": "Time",
-    "yLabel": "Left Y axis label",
-    "yLabelRight": "Right Y axis label (if dual-axis, otherwise omit)",
-    "series": [
-      {
-        "key": "field_name",
-        "label": "Display Name",
-        "color": "#hex",
-        "type": "line|bar|area|scatter",
-        "strokeWidth": 2,
-        "dot": false,
-        "fillOpacity": 0.15,
-        "yAxisId": "left|right"
-      }
-    ],
-    "tooltip": true,
-    "legend": true,
-    "grid": true,
-    "brush": true,
-    "referenceLines": [{"y": 250, "label": "FTP", "color": "#ff0000", "yAxisId": "left", "strokeDasharray": "5 5"}]
+    "yLabel": "Left Y label",
+    "yLabelRight": "Right Y label (if dual-axis)",
+    "series": [{"key":"field","label":"Name","color":"#hex","type":"line","strokeWidth":2,"dot":false,"fillOpacity":0.15,"yAxisId":"left|right"}],
+    "tooltip": true, "legend": true, "grid": true, "brush": true,
+    "referenceLines": [{"y":250,"label":"FTP","color":"#ff0000","yAxisId":"left","strokeDasharray":"5 5"}]
   },
-
-  "insight": "2-4 sentences interpreting the analysis in advance. Reference the metrics you're computing and explain what the athlete should look for in the chart. Coaching context — what the numbers mean for training."
+  "insight": "2-4 sentences interpreting the analysis. Reference metrics, provide coaching context."
 }
+
+IMPORTANT: The <plan> block comes FIRST. The JSON follows AFTER </plan> with NO markdown fences.
 
 ## STANDARD COLORS
 Power=#2F71FF, HR=#FF3B2F, Cadence=#FF9500, Speed=#28CD56, Altitude=#8E8E93, Temp=#AF52DE, Gradient=#FF2D55
@@ -94,7 +83,7 @@ Power=#2F71FF, HR=#FF3B2F, Cadence=#FF9500, Speed=#28CD56, Altitude=#8E8E93, Tem
 - Always add companion data: a coach never shows one metric in isolation`
 
 // ─────────────────────────────────────────────
-// CONVERSATIONAL (no file — lightweight Sonnet chat)
+// CONVERSATIONAL (no file — stays non-streaming)
 // ─────────────────────────────────────────────
 
 const CHAT_SYSTEM = `You are Lucy's Code Assistant V2 — you help athletes analyze cycling activity files (FIT, TCX, GPX).
@@ -108,7 +97,7 @@ When no file is uploaded, you can:
 Be concise and helpful. Do NOT use emojis.`
 
 // ─────────────────────────────────────────────
-// Build ride context string from data summary
+// Build ride context
 // ─────────────────────────────────────────────
 
 function buildRideContext(dataSummary) {
@@ -157,6 +146,140 @@ function parseJSON(text) {
 }
 
 // ─────────────────────────────────────────────
+// STREAMING ANALYSIS — async generator yields SSE events
+// ─────────────────────────────────────────────
+
+async function* streamAnalysis(message, dataSummary, samplePoints, history, anthropic) {
+  const startTime = Date.now()
+  const { tags, fieldRanges, fieldsAvailable } = buildRideContext(dataSummary)
+
+  const msgs = []
+  if (history && history.length > 0) {
+    for (const m of history.slice(-6)) {
+      msgs.push({
+        role: m.role === 'user' ? 'user' : 'assistant',
+        content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+      })
+    }
+  }
+
+  msgs.push({
+    role: 'user',
+    content: `## ATHLETE'S QUESTION
+${message}
+
+## RIDE CHARACTERISTICS
+${tags.length > 0 ? tags.join(', ') : 'Standard outdoor ride'}
+Points: ${dataSummary.point_count}, Duration: ${Math.round(dataSummary.duration_seconds / 60)}min, Distance: ${dataSummary.distance_km}km, Sample rate: ~${dataSummary.sample_rate}s
+
+## AVAILABLE DATA FIELDS
+${fieldsAvailable.join(', ')}
+
+## FIELD RANGES
+${fieldRanges}
+
+## SAMPLE POINTS (structure reference — first 5)
+${JSON.stringify((samplePoints || []).slice(0, 5), null, 2)}
+
+Respond with <plan>...</plan> then the JSON object.`
+  })
+
+  // Stream from Anthropic
+  const stream = anthropic.messages.stream({
+    model: SONNET_MODEL,
+    max_tokens: 16384,
+    temperature: 0.5,
+    system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
+    messages: msgs
+  })
+
+  let fullText = ''
+  let planEmitted = ''   // how much plan text we've already sent
+  let planDone = false
+
+  const PLAN_OPEN = '<plan>'
+  const PLAN_CLOSE = '</plan>'
+  // Keep a lookback buffer so we don't split on the closing tag
+  const LOOKBACK = PLAN_CLOSE.length
+
+  for await (const event of stream) {
+    if (event.type !== 'content_block_delta') continue
+    if (event.delta?.type !== 'text_delta') continue
+
+    fullText += event.delta.text
+
+    if (planDone) continue // accumulating JSON, nothing to emit yet
+
+    const openIdx = fullText.indexOf(PLAN_OPEN)
+    if (openIdx === -1) continue // haven't seen <plan> yet
+
+    const closeIdx = fullText.indexOf(PLAN_CLOSE)
+
+    if (closeIdx !== -1) {
+      // Plan tag fully closed — emit any remaining plan text
+      const planText = fullText.slice(openIdx + PLAN_OPEN.length, closeIdx)
+      const newText = planText.slice(planEmitted.length)
+      if (newText) {
+        yield { type: 'plan_delta', text: newText }
+      }
+      planDone = true
+      yield { type: 'plan_done' }
+    } else {
+      // Plan started but not closed — stream safe portion
+      // (hold back last N chars in case </plan> is split across chunks)
+      const planSoFar = fullText.slice(openIdx + PLAN_OPEN.length)
+      const safeEnd = Math.max(0, planSoFar.length - LOOKBACK)
+      const safeText = planSoFar.slice(0, safeEnd)
+      const newText = safeText.slice(planEmitted.length)
+      if (newText) {
+        yield { type: 'plan_delta', text: newText }
+        planEmitted = safeText
+      }
+    }
+  }
+
+  // Stream finished — get final message for usage stats
+  const finalMessage = await stream.finalMessage()
+  const usage = finalMessage.usage || {}
+  const elapsed = Date.now() - startTime
+
+  console.log(`[code-agent-v2] Sonnet streamed: ${elapsed}ms, in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens || 0}`)
+
+  // Extract JSON from after </plan>
+  const closeIdx = fullText.indexOf(PLAN_CLOSE)
+  const jsonText = closeIdx !== -1
+    ? fullText.slice(closeIdx + PLAN_CLOSE.length).trim()
+    : fullText // fallback: try parsing the whole thing
+
+  const result = parseJSON(jsonText)
+
+  if (!result || !result.extraction_code) {
+    yield {
+      type: 'error',
+      message: 'Failed to generate analysis code. Please try rephrasing your request.'
+    }
+    return
+  }
+
+  yield {
+    type: 'result',
+    data: {
+      extraction_code: result.extraction_code,
+      metrics_code: result.metrics_code || 'return []',
+      chart_config: result.chart_config,
+      insight: result.insight || '',
+      timing: {
+        sonnet_ms: elapsed,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_read: usage.cache_read_input_tokens || 0,
+        cache_creation: usage.cache_creation_input_tokens || 0
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
 // NETLIFY HANDLER
 // ─────────────────────────────────────────────
 
@@ -180,7 +303,7 @@ export async function handler(event) {
 
     const anthropic = new Anthropic({ apiKey })
 
-    // ─── CHAT (no file data) ────────────────────
+    // ─── CHAT (no file data) — regular JSON response ───
     if (!dataSummary || mode === 'chat') {
       const msgs = []
       if (history && history.length > 0) {
@@ -209,88 +332,9 @@ export async function handler(event) {
       }
     }
 
-    // ─── SINGLE-CALL ANALYSIS ────────────────────
-    const startTime = Date.now()
-    const { tags, fieldRanges, fieldsAvailable } = buildRideContext(dataSummary)
-
-    const msgs = []
-    if (history && history.length > 0) {
-      for (const m of history.slice(-6)) {
-        msgs.push({
-          role: m.role === 'user' ? 'user' : 'assistant',
-          content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
-        })
-      }
-    }
-
-    msgs.push({
-      role: 'user',
-      content: `## ATHLETE'S QUESTION
-${message}
-
-## RIDE CHARACTERISTICS
-${tags.length > 0 ? tags.join(', ') : 'Standard outdoor ride'}
-Points: ${dataSummary.point_count}, Duration: ${Math.round(dataSummary.duration_seconds / 60)}min, Distance: ${dataSummary.distance_km}km, Sample rate: ~${dataSummary.sample_rate}s
-
-## AVAILABLE DATA FIELDS
-${fieldsAvailable.join(', ')}
-
-## FIELD RANGES
-${fieldRanges}
-
-## SAMPLE POINTS (structure reference — first 5)
-${JSON.stringify((samplePoints || []).slice(0, 5), null, 2)}
-
-Return the full JSON with plan, extraction_code, metrics_code, chart_config, and insight.`
-    })
-
-    const response = await anthropic.messages.create({
-      model: SONNET_MODEL,
-      max_tokens: 16384,
-      temperature: 0.5,
-      system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
-      messages: msgs
-    })
-
-    const usage = response.usage || {}
-    const elapsed = Date.now() - startTime
-
-    console.log(`[code-agent-v2] Sonnet single-call: ${elapsed}ms, in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens || 0}`)
-
-    const text = response.content.filter(b => b.type === 'text').map(b => b.text).join('')
-    const result = parseJSON(text)
-
-    if (!result || !result.extraction_code) {
-      return {
-        statusCode: 200,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'error',
-          response: 'Failed to generate analysis. Please try rephrasing your request.',
-          timestamp: new Date().toISOString()
-        })
-      }
-    }
-
+    // ─── ANALYSIS — stream SSE ──────────────────────
     return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        type: 'visualization',
-        plan: result.plan,
-        extraction_code: result.extraction_code,
-        metrics_code: result.metrics_code || 'return []',
-        chart_config: result.chart_config,
-        insight: result.insight || '',
-        timing: {
-          sonnet_ms: elapsed,
-          input_tokens: usage.input_tokens,
-          output_tokens: usage.output_tokens,
-          cache_read: usage.cache_read_input_tokens || 0,
-          cache_creation: usage.cache_creation_input_tokens || 0
-        },
-        timestamp: new Date().toISOString()
-      })
+      stream: streamAnalysis(message, dataSummary, samplePoints || [], history, anthropic)
     }
 
   } catch (error) {
