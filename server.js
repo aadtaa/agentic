@@ -174,9 +174,30 @@ async function main() {
       try {
         console.log(`[${new Date().toISOString().slice(11, 19)}] ${req.method} /${fnName}`)
         const result = await handler(event)
-        const headers = { 'Content-Type': 'application/json', ...(result.headers || {}) }
-        res.writeHead(result.statusCode || 200, headers)
-        res.end(result.body || '')
+
+        // Streaming support: if handler returns { stream: asyncIterable }, pipe SSE
+        if (result.stream) {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'Access-Control-Allow-Origin': '*',
+          })
+          try {
+            for await (const chunk of result.stream) {
+              res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+            }
+          } catch (streamErr) {
+            console.error(`[${fnName}] Stream error:`, streamErr.message)
+            res.write(`data: ${JSON.stringify({ type: 'error', message: streamErr.message })}\n\n`)
+          }
+          res.write('data: [DONE]\n\n')
+          res.end()
+        } else {
+          const headers = { 'Content-Type': 'application/json', ...(result.headers || {}) }
+          res.writeHead(result.statusCode || 200, headers)
+          res.end(result.body || '')
+        }
       } catch (err) {
         console.error(`[${fnName}] Error:`, err.message)
         res.writeHead(500, { 'Content-Type': 'application/json' })
