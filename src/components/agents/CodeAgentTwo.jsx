@@ -430,13 +430,22 @@ const PipelineInfo = ({ timing }) => {
         <div style={{
           display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap',
         }}>
-          {timing.sonnet_ms && (
+          {timing.thinking_ms != null && (
+            <span style={{
+              fontSize: '11px', padding: '2px 8px',
+              backgroundColor: '#F3E8FF', borderRadius: '8px',
+              color: '#7C3AED', whiteSpace: 'nowrap',
+            }}>
+              Thinking {(timing.thinking_ms / 1000).toFixed(1)}s
+            </span>
+          )}
+          {timing.opus_ms && (
             <span style={{
               fontSize: '11px', padding: '2px 8px',
               backgroundColor: 'var(--grey-100)', borderRadius: '8px',
               color: 'var(--text-tertiary)', whiteSpace: 'nowrap',
             }}>
-              Sonnet {timing.sonnet_ms}ms
+              Opus {(timing.opus_ms / 1000).toFixed(1)}s
             </span>
           )}
           {timing.execution_ms != null && (
@@ -477,10 +486,12 @@ const PipelineInfo = ({ timing }) => {
           color: 'var(--text-secondary)', lineHeight: 1.6,
         }}>
           <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '8px' }}>
-            Pipeline Details — Single Sonnet Call
+            Pipeline Details — Opus with Extended Thinking
           </div>
           <div style={{ fontSize: '12px' }}>
-            {timing.sonnet_ms && <div>Sonnet 4.5 (plan + code + insight): {(timing.sonnet_ms / 1000).toFixed(1)}s</div>}
+            {timing.thinking_ms != null && <div>Thinking (internal reasoning): {(timing.thinking_ms / 1000).toFixed(1)}s</div>}
+            {timing.generation_ms != null && <div>Generation (plan + code + insight): {(timing.generation_ms / 1000).toFixed(1)}s</div>}
+            {timing.opus_ms && <div>Total Opus: {(timing.opus_ms / 1000).toFixed(1)}s</div>}
             {timing.execution_ms != null && <div>Client Execution: {timing.execution_ms}ms</div>}
           </div>
         </div>
@@ -696,7 +707,7 @@ const CodeAgentTwo = () => {
 
     setMessages(prev => [...prev, { role: 'user', content: messageText }])
     setIsLoading(true)
-    setLoadingStage('Analyzing with Sonnet...')
+    setLoadingStage('Analyzing with Opus...')
 
     try {
       const history = messages.map(m => ({
@@ -735,7 +746,7 @@ const CodeAgentTwo = () => {
         return
       }
 
-      // Create plan message immediately — it'll fill in as text streams
+      // Create plan message — starts in thinking state
       const planMsgKey = Date.now()
       setMessages(prev => [...prev, {
         role: 'assistant',
@@ -743,8 +754,10 @@ const CodeAgentTwo = () => {
         planText: '',
         _key: planMsgKey,
         isGenerating: true,
+        isThinking: true,
+        thinkingMs: null,
       }])
-      setLoadingStage('')  // plan is visible, no need for loading text
+      setLoadingStage('')  // thinking indicator shown in message itself
 
       // Read SSE stream
       const reader = response.body.getReader()
@@ -761,7 +774,16 @@ const CodeAgentTwo = () => {
         sseBuffer = remainder
 
         for (const evt of events) {
-          if (evt.type === 'plan_delta') {
+          if (evt.type === 'thinking_started') {
+            // Thinking indicator already shown via isThinking: true
+          } else if (evt.type === 'thinking_done') {
+            // Thinking phase complete — transition to plan streaming
+            setMessages(prev => prev.map(m =>
+              m._key === planMsgKey
+                ? { ...m, isThinking: false, thinkingMs: evt.thinking_ms }
+                : m
+            ))
+          } else if (evt.type === 'plan_delta') {
             // Append plan text — renders immediately
             setMessages(prev => prev.map(m =>
               m._key === planMsgKey
@@ -827,9 +849,11 @@ const CodeAgentTwo = () => {
               metrics,
               insight: resultData.insight,
               timing: {
-                sonnet_ms: resultData.timing?.sonnet_ms,
+                opus_ms: resultData.timing?.opus_ms,
+                thinking_ms: resultData.timing?.thinking_ms,
+                generation_ms: resultData.timing?.generation_ms,
                 execution_ms: executionMs,
-                total_ms: (resultData.timing?.sonnet_ms || 0) + executionMs
+                total_ms: (resultData.timing?.opus_ms || 0) + executionMs
               }
             }
           : m
@@ -917,30 +941,69 @@ const CodeAgentTwo = () => {
                       </div>
                     </div>
                   ) : msg.type === 'plan' ? (
-                    /* Streaming plan — text appears as Sonnet generates */
+                    /* Thinking indicator → streaming plan text */
                     <div style={{ marginBottom: '24px' }}>
-                      <div style={{
-                        backgroundColor: 'var(--grey-50, #f8f8fa)',
-                        borderRadius: '12px', padding: '16px 20px',
-                        borderLeft: '3px solid #28CD56',
-                      }}>
+                      {/* Thinking indicator — shown while Opus reasons internally */}
+                      {msg.isThinking && (
                         <div style={{
-                          fontSize: '14px', lineHeight: 1.7, color: 'var(--text-primary)',
+                          display: 'flex', alignItems: 'center', gap: '10px',
+                          padding: '14px 20px',
+                          backgroundColor: 'var(--grey-50, #f8f8fa)',
+                          borderRadius: '12px',
+                          borderLeft: '3px solid #7C3AED',
                         }}>
-                          {msg.planText}
-                          {msg.isGenerating && (
-                            <span style={{
-                              display: 'inline-block',
-                              width: '6px', height: '16px',
-                              backgroundColor: '#28CD56',
-                              marginLeft: '2px',
-                              verticalAlign: 'text-bottom',
-                              animation: 'cursorBlink 0.8s ease-in-out infinite',
+                          <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                            <div style={{
+                              width: '7px', height: '7px', borderRadius: '50%',
+                              backgroundColor: '#7C3AED',
+                              animation: 'thinkingPulse 1.4s ease-in-out infinite',
                             }} />
-                          )}
+                            <div style={{
+                              width: '7px', height: '7px', borderRadius: '50%',
+                              backgroundColor: '#7C3AED',
+                              animation: 'thinkingPulse 1.4s ease-in-out 0.2s infinite',
+                            }} />
+                            <div style={{
+                              width: '7px', height: '7px', borderRadius: '50%',
+                              backgroundColor: '#7C3AED',
+                              animation: 'thinkingPulse 1.4s ease-in-out 0.4s infinite',
+                            }} />
+                          </div>
+                          <span style={{
+                            fontSize: '13px', color: '#7C3AED', fontWeight: 500,
+                          }}>
+                            Reasoning deeply...
+                          </span>
                         </div>
-                      </div>
-                      {msg.isGenerating && loadingStage && (
+                      )}
+
+                      {/* Plan text — streams in after thinking completes */}
+                      {!msg.isThinking && (
+                        <div style={{
+                          backgroundColor: 'var(--grey-50, #f8f8fa)',
+                          borderRadius: '12px', padding: '16px 20px',
+                          borderLeft: '3px solid #28CD56',
+                        }}>
+                          <div style={{
+                            fontSize: '14px', lineHeight: 1.7, color: 'var(--text-primary)',
+                          }}>
+                            {msg.planText}
+                            {msg.isGenerating && (
+                              <span style={{
+                                display: 'inline-block',
+                                width: '6px', height: '16px',
+                                backgroundColor: '#28CD56',
+                                marginLeft: '2px',
+                                verticalAlign: 'text-bottom',
+                                animation: 'cursorBlink 0.8s ease-in-out infinite',
+                              }} />
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Loading stage text */}
+                      {msg.isGenerating && !msg.isThinking && loadingStage && (
                         <p style={{
                           fontSize: '13px', color: 'var(--text-tertiary)',
                           margin: '8px 0 0 0',
@@ -1035,7 +1098,7 @@ const CodeAgentTwo = () => {
                 fontSize: '16px', color: 'var(--text-secondary)',
                 maxWidth: '420px', lineHeight: 1.6, margin: '20px 0 0 0',
               }}>
-                Single Sonnet call — plan, code, chart config, and insight in one shot. Upload a FIT, TCX, or GPX file to get started.
+                Opus with deep reasoning — thinks through your question, then delivers plan, code, and insight in one shot. Upload a FIT, TCX, or GPX file to get started.
               </p>
 
               {/* Upload button */}

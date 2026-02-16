@@ -1,28 +1,56 @@
-// Code Agent V2 — Streaming Single-Call Pipeline
+// Code Agent V2 — Opus + Extended Thinking Pipeline
 //
-// ONE Sonnet call produces plan + code + chart + insight.
-// The plan streams to the frontend in real-time via SSE while
-// the code/chart JSON is still generating.
+// ONE Opus call with deep reasoning produces plan + code + chart + insight.
+// Extended thinking reasons internally (not shown to user) about what the
+// athlete really needs, best viz approach, companion data, etc.
+// The plan streams to the frontend in real-time via SSE.
 //
-// Output format:  <plan>coach text</plan> then JSON blob
-// SSE events:     plan_delta → plan_done → result
+// Flow:  thinking (internal) → <plan> streams → JSON blob → result
+// SSE:   thinking_started → thinking_done → plan_delta → plan_done → result
 
 import Anthropic from '@anthropic-ai/sdk'
 
-const SONNET_MODEL = 'claude-sonnet-4-5-20250929'
+const OPUS_MODEL   = 'claude-opus-4-6'
+const SONNET_MODEL = 'claude-sonnet-4-5-20250929'  // chat mode only
 
 // ─────────────────────────────────────────────
-// SYSTEM PROMPT — plan text first, then JSON
+// SYSTEM PROMPT — coaching philosophy + output format
 // ─────────────────────────────────────────────
 
 const SYSTEM = `You are an elite cycling coach AND JavaScript developer.  You receive an athlete's question plus a data summary of their activity file (FIT/TCX/GPX parsed client-side).
+
+## DEEP REASONING — COACHING PHILOSOPHY
+
+Before writing any output, reason deeply through these questions in your internal thinking:
+
+### What Does the Athlete REALLY Want?
+- Read between the lines. "Show me power" means they want to understand their ride effort, not just see a line graph. "How was my ride?" means actionable coaching feedback.
+- Consider what follow-up they would ask after seeing your analysis, and preempt it.
+
+### What Is the Best Visualization Approach?
+- Single chart or multiple? Usually ONE well-designed composed chart with 2-3 overlaid series beats multiple separate charts — but sometimes a time-series PLUS a distribution histogram tells a richer story.
+- Which chart type tells the story? Time-series for trends, scatter for correlations, bar for distributions, area for profiles.
+- What reference lines add context? FTP line, zone boundaries, average lines — pick the ones that make the data speak.
+
+### What Companion Data Tells the Full Story?
+- A coach NEVER looks at one metric alone. Power without HR is half the picture. Elevation without speed is misleading.
+- Think about what secondary metric reveals something the primary metric hides (e.g., HR drift reveals fatigue that power alone masks).
+- Consider computed metrics (NP, IF, TSS, VI, efficiency factor, decoupling) — which ones are genuinely insightful for THIS ride?
+
+### What Makes This Ride Unique?
+- Look at the data ranges. Extreme altitude? Temperature swings? Missing sensors? Long duration? Indoor vs outdoor?
+- If something looks unusual (huge power spikes, HR drops, cadence zeros), reason about whether it is real or data noise.
+
+### Minimal But Complete
+- Every series on the chart should earn its place. Include everything needed to answer thoroughly, nothing extraneous.
+- Think about whether showing a distribution/histogram alongside the main chart would strengthen the analysis.
 
 ## OUTPUT FORMAT
 
 Your response MUST follow this exact structure — plan text inside <plan> tags, then a JSON object:
 
 <plan>
-Write 3-6 conversational sentences TO the athlete as if you're sitting next to them at a cafe reviewing their ride. Flow naturally — no bullet points, no bold markers. Mention specific fields and metrics by name, weave them into the narrative. Example tone: "I'll start by plotting your power with a 30-second rolling average so we can see past the spikes to your real effort trend. Since a coach never looks at power alone, I'm layering in your heart rate to check for cardiac drift..."
+Write 3-6 conversational sentences TO the athlete as if you're sitting next to them at a cafe reviewing their ride. Flow naturally — no bullet points, no bold markers. Mention specific fields and metrics by name, weave them into the narrative. Your reasoning should shine through — show the athlete WHY you chose this approach. Example tone: "I'll start by plotting your power with a 30-second rolling average so we can see past the spikes to your real effort trend. Since a coach never looks at power alone, I'm layering in your heart rate to check for cardiac drift..."
 </plan>
 {
   "extraction_code": "JavaScript function body. Receives \`data\` (array of point objects). Returns an array of flat objects for Recharts.",
@@ -83,7 +111,7 @@ Power=#2F71FF, HR=#FF3B2F, Cadence=#FF9500, Speed=#28CD56, Altitude=#8E8E93, Tem
 - Always add companion data: a coach never shows one metric in isolation`
 
 // ─────────────────────────────────────────────
-// CONVERSATIONAL (no file — stays non-streaming)
+// CONVERSATIONAL (no file — stays non-streaming Sonnet)
 // ─────────────────────────────────────────────
 
 const CHAT_SYSTEM = `You are Lucy's Code Assistant V2 — you help athletes analyze cycling activity files (FIT, TCX, GPX).
@@ -146,7 +174,7 @@ function parseJSON(text) {
 }
 
 // ─────────────────────────────────────────────
-// STREAMING ANALYSIS — async generator yields SSE events
+// STREAMING ANALYSIS — Opus + extended thinking
 // ─────────────────────────────────────────────
 
 async function* streamAnalysis(message, dataSummary, samplePoints, history, anthropic) {
@@ -184,11 +212,12 @@ ${JSON.stringify((samplePoints || []).slice(0, 5), null, 2)}
 Respond with <plan>...</plan> then the JSON object.`
   })
 
-  // Stream from Anthropic
+  // Stream from Anthropic — Opus with extended thinking
   const stream = anthropic.messages.stream({
-    model: SONNET_MODEL,
+    model: OPUS_MODEL,
     max_tokens: 16384,
-    temperature: 0.5,
+    // temperature omitted — extended thinking requires default (1)
+    thinking: { type: 'enabled', budget_tokens: 10000 },
     system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
     messages: msgs
   })
@@ -197,13 +226,41 @@ Respond with <plan>...</plan> then the JSON object.`
   let planEmitted = ''   // how much plan text we've already sent
   let planDone = false
 
+  // Extended thinking state
+  let currentBlockType = null
+  let thinkingStartTime = Date.now()
+  let thinkingEndTime = null
+  let thinkingEmitted = false
+
   const PLAN_OPEN = '<plan>'
   const PLAN_CLOSE = '</plan>'
-  // Keep a lookback buffer so we don't split on the closing tag
   const LOOKBACK = PLAN_CLOSE.length
 
+  // Signal thinking has started
+  yield { type: 'thinking_started' }
+
   for await (const event of stream) {
+    // Track content block transitions (thinking → text)
+    if (event.type === 'content_block_start') {
+      currentBlockType = event.content_block?.type || 'text'
+      if (currentBlockType === 'text' && !thinkingEndTime) {
+        // Transition from thinking to text output
+        thinkingEndTime = Date.now()
+        yield {
+          type: 'thinking_done',
+          thinking_ms: thinkingEndTime - thinkingStartTime
+        }
+      }
+      continue
+    }
+
+    if (event.type === 'content_block_stop') continue
     if (event.type !== 'content_block_delta') continue
+
+    // Skip thinking deltas — internal reasoning, NOT shown to user
+    if (event.delta?.type === 'thinking_delta') continue
+
+    // Only process text_delta events
     if (event.delta?.type !== 'text_delta') continue
 
     fullText += event.delta.text
@@ -242,8 +299,10 @@ Respond with <plan>...</plan> then the JSON object.`
   const finalMessage = await stream.finalMessage()
   const usage = finalMessage.usage || {}
   const elapsed = Date.now() - startTime
+  const thinkingMs = thinkingEndTime ? thinkingEndTime - thinkingStartTime : 0
+  const generationMs = elapsed - thinkingMs
 
-  console.log(`[code-agent-v2] Sonnet streamed: ${elapsed}ms, in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens || 0}`)
+  console.log(`[code-agent-v2] Opus streamed: ${elapsed}ms (thinking=${thinkingMs}ms, generation=${generationMs}ms), in=${usage.input_tokens} out=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens || 0}`)
 
   // Extract JSON from after </plan>
   const closeIdx = fullText.indexOf(PLAN_CLOSE)
@@ -269,7 +328,9 @@ Respond with <plan>...</plan> then the JSON object.`
       chart_config: result.chart_config,
       insight: result.insight || '',
       timing: {
-        sonnet_ms: elapsed,
+        opus_ms: elapsed,
+        thinking_ms: thinkingMs,
+        generation_ms: generationMs,
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
         cache_read: usage.cache_read_input_tokens || 0,
@@ -303,7 +364,7 @@ export async function handler(event) {
 
     const anthropic = new Anthropic({ apiKey })
 
-    // ─── CHAT (no file data) — regular JSON response ───
+    // ─── CHAT (no file data) — regular JSON response on Sonnet ───
     if (!dataSummary || mode === 'chat') {
       const msgs = []
       if (history && history.length > 0) {
@@ -332,7 +393,7 @@ export async function handler(event) {
       }
     }
 
-    // ─── ANALYSIS — stream SSE ──────────────────────
+    // ─── ANALYSIS — Opus + extended thinking, streamed via SSE ───
     return {
       stream: streamAnalysis(message, dataSummary, samplePoints || [], history, anthropic)
     }
