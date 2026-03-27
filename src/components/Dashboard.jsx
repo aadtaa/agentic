@@ -8,6 +8,7 @@ import CodeAgent from './agents/CodeAgent'
 import ResearchAgent from './agents/ResearchAgent'
 import WritingAgent from './agents/WritingAgent'
 import CodeAgentTwo from './agents/CodeAgentTwo'
+import UniversalAgent from './agents/UniversalAgent'
 import DataViewer from './DataViewer'
 import Logo from './Logo'
 
@@ -71,6 +72,18 @@ const Dashboard = () => {
       icon: (
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
           <path d="M10 2L4 10H9L8 16L14 8H9L10 2Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      )
+    },
+    {
+      id: 'cycling',
+      label: 'Cycling Agent',
+      appView: 'cycling',
+      icon: (
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+          <circle cx="9" cy="9" r="7" stroke="currentColor" strokeWidth="1.5"/>
+          <circle cx="9" cy="9" r="2" stroke="currentColor" strokeWidth="1.5"/>
+          <path d="M9 2V7M9 11V16M2 9H7M11 9H16" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
         </svg>
       )
     },
@@ -144,6 +157,8 @@ const Dashboard = () => {
         return <CodeAgent />
       case 'code2':
         return <CodeAgentTwo />
+      case 'cycling':
+        return <UniversalAgent />
       case 'research':
         return <ResearchAgent />
       case 'writing':
@@ -215,7 +230,7 @@ const Dashboard = () => {
             {renderView()}
 
             {/* Floating Assistant - shown on agent views that don't have their own chat */}
-            {activeView !== 'chat' && activeView !== 'data' && activeView !== 'code' && activeView !== 'code2' && (
+            {activeView !== 'chat' && activeView !== 'data' && activeView !== 'code' && activeView !== 'code2' && activeView !== 'cycling' && (
               <FloatingAssistant
                 placeholder={`Ask about ${activeView}...`}
               />
